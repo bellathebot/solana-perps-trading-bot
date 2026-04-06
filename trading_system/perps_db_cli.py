@@ -94,17 +94,20 @@ def main() -> None:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
-            if args.event_type:
-                rows = conn.execute(
-                    "SELECT id, ts, event_type, severity, message, source, metadata_json FROM system_events WHERE event_type = ? ORDER BY ts DESC, id DESC LIMIT ?",
-                    (args.event_type, args.limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, ts, event_type, severity, message, source, metadata_json FROM system_events WHERE COALESCE(source, '') = 'perps-auto-trade.mjs' OR event_type LIKE 'perp_%' ORDER BY ts DESC, id DESC LIMIT ?",
-                    (args.limit,),
-                ).fetchall()
-            print(json.dumps([dict(row) for row in rows]))
+            try:
+                if args.event_type:
+                    rows = conn.execute(
+                        "SELECT id, ts, event_type, severity, message, source, metadata_json FROM system_events WHERE event_type = ? ORDER BY ts DESC, id DESC LIMIT ?",
+                        (args.event_type, args.limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, ts, event_type, severity, message, source, metadata_json FROM system_events WHERE COALESCE(source, '') = 'perps-auto-trade.mjs' OR event_type LIKE 'perp_%' ORDER BY ts DESC, id DESC LIMIT ?",
+                        (args.limit,),
+                    ).fetchall()
+                print(json.dumps([dict(row) for row in rows]))
+            except sqlite3.OperationalError:
+                print('[]')
         finally:
             conn.close()
         return
