@@ -1,10 +1,6 @@
-"""Public perps-facing database surface for the OSS export.
+"""Public perps-facing database surface for the OSS export."""
 
-This module intentionally re-exports only the perps-relevant subset of the
-broader shared SQLite analytics layer used by the public perps workflow.
-"""
-
-from trading_system.trading_db import (
+from trading_system.perps_db_impl import (
     get_perp_executor_state,
     get_perp_open_positions,
     get_perp_summary,
