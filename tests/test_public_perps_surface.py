@@ -67,6 +67,34 @@ class PublicPerpsSurfaceTests(unittest.TestCase):
             )
             self.assertIn('Perps DB sync complete', result.stdout)
 
+
+    def test_signal_engine_emits_long_lane_for_uptrend_fixture(self):
+        node_code = """
+import { computePerpsDecision } from './perps-signal-engine.mjs';
+const now = new Date('2026-04-06T00:00:00.000Z').toISOString();
+const market = { asset: 'SOL', priceUsd: 100, changePct24h: 6, volumeUsd24h: 200000000 };
+const historyRows = [
+  { ts: '2026-04-05T23:00:00.000Z', price_usd: 95, volume_usd_24h: 100000000 },
+  { ts: '2026-04-05T23:15:00.000Z', price_usd: 96, volume_usd_24h: 110000000 },
+  { ts: '2026-04-05T23:30:00.000Z', price_usd: 97.5, volume_usd_24h: 120000000 },
+  { ts: '2026-04-05T23:45:00.000Z', price_usd: 99, volume_usd_24h: 140000000 },
+  { ts: '2026-04-06T00:00:00.000Z', price_usd: 100, volume_usd_24h: 160000000 },
+];
+const out = computePerpsDecision({ market, historyRows, ts: now, basketMetrics: { change15m: 0.3, change60m: 0.8 } });
+console.log(JSON.stringify(out));
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ['node', '--input-type=module', '-e', node_code],
+                capture_output=True,
+                text=True,
+                cwd=str(ROOT),
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            signal_types = {lane['signalType'] for lane in payload['lanes']}
+            self.assertIn('perp_long_continuation', signal_types)
+
     def test_impl_and_core_export_expected_symbols(self):
         import trading_system.perps_core as perps_core
         import trading_system.perps_db_impl as perps_db_impl
