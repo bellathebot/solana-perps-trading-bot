@@ -32,4 +32,8 @@ Public-facing perps CLI path:
 PYTHONPATH=. python trading_system/perps_db_cli.py perp-summary --db ~/.trading-data/trading.db
 ```
 
+Schema reference:
+
+- `docs/reference/perps-schema.md`
+
 The public export includes the perps notifier and perps approval bridge, but not the older spot-only Telegram review tooling.
