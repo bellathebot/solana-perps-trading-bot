@@ -31,9 +31,8 @@ This repository packages the current perps-trading work into a standalone projec
 - Intentionally scaffolded:
   - `trading_system/perps_live_execution_adapter.mjs`
   - true live order placement path
-- Still shared/internal-leaning:
-  - parts of `trading_system/trading_db.py`
-  - compatibility stubs retained to keep the public export runnable
+- Fully public runtime path:
+  - main monitor/executor/CLI/sync now route through `trading_system/perps_db_impl.py`
 
 ## OSS roadmap
 
