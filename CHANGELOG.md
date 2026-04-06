@@ -29,3 +29,5 @@ Highlights:
 - added `trading_system/perps_db_impl.py` as a public implementation shim
 - added `tests/test_public_perps_surface.py` and wired it into CI
 - added `examples/` with public CLI commands and sample payloads
+- removed legacy mixed public files (`trading_db.py`, `trading_db_cli.py`, `sync_trading_db.py`, `accounting_audit.py`)
+- updated bootstrap, CI, and docs to the fully perps-native public path
