@@ -2,7 +2,7 @@
   "HERMES_PERPS_BOT_HOME": "/home/your-user",
   "PERPS_AUTO_TRADE_DATA_DIR": "/home/your-user/.trading-data",
   "PERPS_AUTO_TRADE_DB_PATH": "/home/your-user/.trading-data/trading.db",
-  "PERPS_AUTO_TRADE_DB_CLI": "/path/to/repo/trading_system/trading_db_cli.py",
+  "PERPS_AUTO_TRADE_DB_CLI": "/path/to/repo/trading_system/perps_db_cli.py",
   "PERPS_WALLET_ADDRESS": "YOUR_PUBLIC_WALLET",
   "JUP_BIN": "jup",
   "HELIUS_BIN": "helius",
