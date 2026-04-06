@@ -3,6 +3,7 @@
 import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import { REPO_ROOT, JUP_BIN, DATA_DIR, DB_PATH, DB_CLI, PATH_ENV, DEFAULT_WALLET_ADDRESS } from './runtime-config.mjs';
+import { computePerpsDecision, safeNumber } from './perps-signal-engine.mjs';
 
 const WALLET = process.env.PERPS_WALLET_ADDRESS || DEFAULT_WALLET_ADDRESS;
 const EFFECTIVE_JUP_BIN = JUP_BIN;
@@ -12,8 +13,6 @@ const EFFECTIVE_DB_CLI = DB_CLI;
 const EFFECTIVE_PATH_ENV = PATH_ENV;
 const PILOT_ASSETS = (process.env.PERPS_MONITOR_PILOT_ASSETS || 'SOL,BTC,ETH').split(',').map(s => s.trim()).filter(Boolean);
 const PILOT_LOOKBACK_MINUTES = parseInt(process.env.PERPS_MONITOR_PILOT_LOOKBACK_MINUTES || '180', 10);
-const NO_TRADE_MIN_SHORT_EDGE_PCT = parseFloat(process.env.PERPS_MONITOR_NO_TRADE_MIN_SHORT_EDGE_PCT || '0.25');
-const SHORT_SCORE_CANDIDATE_THRESHOLD = parseFloat(process.env.PERPS_MONITOR_SHORT_SCORE_CANDIDATE_THRESHOLD || '65');
 
 function ensureDataDir() {
   if (!fs.existsSync(EFFECTIVE_DATA_DIR)) fs.mkdirSync(EFFECTIVE_DATA_DIR, { recursive: true });
@@ -24,7 +23,7 @@ function execJson(cmd) {
     const raw = execSync(cmd, {
       encoding: 'utf-8',
       timeout: 30000,
-      env: { ...process.env, PATH: PATH_ENV },
+      env: { ...process.env, PATH: EFFECTIVE_PATH_ENV },
       stdio: ['pipe', 'pipe', 'pipe'],
       maxBuffer: 1024 * 1024,
     });
@@ -91,6 +90,7 @@ function summarizeAccount(ts, positionsPayload, historyPayload) {
   const unrealized = positions.reduce((sum, p) => sum + Number(p.unrealizedPnlUsd ?? p.unrealizedPnl ?? 0), 0);
   const realized = (historyPayload?.trades || []).reduce((sum, t) => sum + Number(t.realizedPnlUsd ?? t.realizedPnl ?? 0), 0);
   const marginUsed = positions.reduce((sum, p) => sum + Number(p.marginUsedUsd ?? p.collateralUsd ?? 0), 0);
+  const equityEstimate = Math.max(0, openNotional + unrealized + realized);
   return {
     ts,
     wallet_address: WALLET,
@@ -99,7 +99,7 @@ function summarizeAccount(ts, positionsPayload, historyPayload) {
     unrealized_pnl_usd: unrealized,
     realized_pnl_usd: realized,
     margin_used_usd: marginUsed,
-    equity_estimate_usd: null,
+    equity_estimate_usd: equityEstimate,
     raw: { positionsPayload, historyPayload },
   };
 }
@@ -174,136 +174,27 @@ function normalizeFill(ts, trade) {
   };
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function inferRegimeTag(change24h = 0) {
-  if (change24h <= -8) return 'panic_selloff';
-  if (change24h <= -3) return 'trend_down';
-  if (change24h >= 5) return 'trend_up';
-  if (Math.abs(change24h) >= 1.5) return 'choppy';
-  return 'stable';
-}
-
 function getPerpHistory(assets) {
-  return readDbCli('perp-market-history', ['--minutes', String(PILOT_LOOKBACK_MINUTES), '--assets', assets.join(','), '--limit-per-asset', '120']);
+  return readDbCli('perp-market-history', ['--minutes', String(PILOT_LOOKBACK_MINUTES), '--assets', assets.join(','), '--limit-per-asset', '240']);
 }
 
-function latestPriceBefore(history, minutesBack) {
-  if (!Array.isArray(history) || !history.length) return null;
-  const targetTs = Date.now() - (minutesBack * 60 * 1000);
-  let chosen = history[0];
-  for (const row of history) {
-    const ts = new Date(row.ts).getTime();
-    if (ts <= targetTs) return row;
-    chosen = row;
+function computeBasketMetrics(historyByAsset) {
+  const returns15 = [];
+  const returns60 = [];
+  for (const rows of Object.values(historyByAsset || {})) {
+    const history = Array.isArray(rows) ? rows : [];
+    if (history.length < 2) continue;
+    const latest = history[history.length - 1];
+    const prev15 = history[Math.max(0, history.length - 4)] || history[0];
+    const prev60 = history[0];
+    const lastPrice = safeNumber(latest?.price_usd, 0);
+    const price15 = safeNumber(prev15?.price_usd, lastPrice);
+    const price60 = safeNumber(prev60?.price_usd, lastPrice);
+    if (lastPrice > 0 && price15 > 0) returns15.push(((lastPrice - price15) / price15) * 100);
+    if (lastPrice > 0 && price60 > 0) returns60.push(((lastPrice - price60) / price60) * 100);
   }
-  return chosen;
-}
-
-function pctChange(from, to) {
-  if (!from || !to || !Number(from.price_usd) || !Number(to.price_usd)) return null;
-  return ((Number(to.price_usd) - Number(from.price_usd)) / Number(from.price_usd)) * 100;
-}
-
-function stableDecisionBucket(ts, minutes = 5) {
-  const bucketMs = minutes * 60 * 1000;
-  const bucketStart = Math.floor(new Date(ts).getTime() / bucketMs) * bucketMs;
-  return new Date(bucketStart).toISOString();
-}
-
-function computePilotDecision(market, historyRows, ts) {
-  const history = historyRows || [];
-  const latest = history[history.length - 1] || { price_usd: market.priceUsd ?? market.price_usd, ts };
-  const priceNow = Number(latest.price_usd ?? market.priceUsd ?? market.price_usd ?? 0);
-  const row5 = latestPriceBefore(history, 5);
-  const row15 = latestPriceBefore(history, 15);
-  const row60 = latestPriceBefore(history, 60);
-  const change5m = pctChange(row5, latest) ?? 0;
-  const change15m = pctChange(row15, latest) ?? 0;
-  const change60m = pctChange(row60, latest) ?? 0;
-  const low60 = history.length ? Math.min(...history.map(r => Number(r.low_usd_24h ?? r.price_usd ?? priceNow)).filter(Boolean)) : priceNow;
-  const highRecent = history.length ? Math.max(...history.slice(-12).map(r => Number(r.price_usd ?? priceNow)).filter(Boolean)) : priceNow;
-  const bouncePct = low60 > 0 ? ((priceNow - low60) / low60) * 100 : 0;
-  const pullbackFromBounceHighPct = highRecent > 0 ? ((priceNow - highRecent) / highRecent) * 100 : 0;
-  const change24h = Number(market.changePct24h ?? market.change_pct_24h ?? 0);
-  const volume24h = Number(market.volumeUsd24h ?? market.volume_usd_24h ?? 0);
-  const regimeTag = inferRegimeTag(change24h);
-
-  const continuationComponents = {
-    regime: (regimeTag === 'trend_down' ? 25 : regimeTag === 'panic_selloff' ? 20 : 0),
-    change_15m: clamp(Math.abs(Math.min(change15m, 0)) * 8, 0, 20),
-    change_60m: clamp(Math.abs(Math.min(change60m, 0)) * 6, 0, 20),
-    volume: volume24h >= 100000000 ? 15 : volume24h >= 25000000 ? 10 : 5,
-    overextension_penalty: change5m <= -1.5 ? -8 : 0,
-  };
-  const continuationScore = clamp(Math.round(Object.values(continuationComponents).reduce((sum, value) => sum + value, 0)), 0, 100);
-
-  const failedBounceComponents = {
-    regime: (regimeTag === 'panic_selloff' ? 30 : regimeTag === 'trend_down' ? 22 : 0),
-    bounce_quality: clamp(Math.max(0, bouncePct) * 8, 0, 20),
-    bounce_failure: clamp(Math.abs(Math.min(change5m, 0)) * 14, 0, 20),
-    pullback_from_high: clamp(Math.abs(Math.min(pullbackFromBounceHighPct, 0)) * 12, 0, 15),
-    volume: volume24h >= 100000000 ? 10 : volume24h >= 25000000 ? 6 : 3,
-  };
-  const failedBounceScore = clamp(Math.round(Object.values(failedBounceComponents).reduce((sum, value) => sum + value, 0)), 0, 100);
-
-  const bestShortScore = Math.max(continuationScore, failedBounceScore);
-  const minShortEdgeScore = clamp(Math.round(NO_TRADE_MIN_SHORT_EDGE_PCT * 100), 0, 100);
-  const shortEdgeQualified = bestShortScore >= SHORT_SCORE_CANDIDATE_THRESHOLD && bestShortScore >= minShortEdgeScore;
-  const noTradeScore = clamp(shortEdgeQualified ? 25 : Math.max(55, 85 - Math.round(bestShortScore / 2)), 0, 100);
-  const decisionBucket = stableDecisionBucket(ts, 5);
-  const decisionId = `tiny-live-perps:${market.asset}:${decisionBucket}`;
-
-  return {
-    ts,
-    decisionId,
-    regimeTag,
-    priceNow,
-    metrics: {
-      change5m,
-      change15m,
-      change60m,
-      change24h,
-      bouncePct,
-      pullbackFromBounceHighPct,
-      volume24h,
-      low60,
-      highRecent,
-    },
-    lanes: [
-      {
-        signalType: 'perp_short_continuation',
-        side: 'sell',
-        score: continuationScore,
-        status: continuationScore >= SHORT_SCORE_CANDIDATE_THRESHOLD && continuationScore >= minShortEdgeScore ? 'candidate' : 'skipped',
-        reason: continuationScore >= SHORT_SCORE_CANDIDATE_THRESHOLD && continuationScore >= minShortEdgeScore ? 'trend_down_short_continuation' : 'continuation_below_threshold',
-        scoreComponents: continuationComponents,
-      },
-      {
-        signalType: 'perp_short_failed_bounce',
-        side: 'sell',
-        score: failedBounceScore,
-        status: failedBounceScore >= SHORT_SCORE_CANDIDATE_THRESHOLD && failedBounceScore >= minShortEdgeScore ? 'candidate' : 'skipped',
-        reason: failedBounceScore >= SHORT_SCORE_CANDIDATE_THRESHOLD && failedBounceScore >= minShortEdgeScore ? 'panic_or_downtrend_failed_bounce_short' : 'failed_bounce_below_threshold',
-        scoreComponents: failedBounceComponents,
-      },
-      {
-        signalType: 'perp_no_trade',
-        side: 'flat',
-        score: noTradeScore,
-        status: 'candidate',
-        reason: shortEdgeQualified ? 'monitor_short_lanes' : 'no_trade_when_edge_is_mixed',
-        scoreComponents: {
-          best_short_score: bestShortScore,
-          min_short_edge_score: minShortEdgeScore,
-          no_trade_floor: NO_TRADE_MIN_SHORT_EDGE_PCT,
-          regime: regimeTag,
-        },
-      },
-    ],
-  };
+  const avg = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  return { change15m: avg(returns15), change60m: avg(returns60) };
 }
 
 function recordPerpPilotCandidates(decision, market) {
@@ -318,10 +209,10 @@ function recordPerpPilotCandidates(decision, market) {
       side: lane.side,
       product_type: 'perps',
       price: decision.priceNow,
-      reference_level: decision.metrics.highRecent,
-      distance_pct: decision.metrics.pullbackFromBounceHighPct,
+      reference_level: decision.metrics.referencePrice,
+      distance_pct: decision.metrics.distanceFromReferencePct,
       liquidity: Number(market.volumeUsd24h ?? market.volume_usd_24h ?? 0),
-      score: lane.score,
+      score: lane.compositeScore,
       regime_tag: decision.regimeTag,
       decision_id: decision.decisionId,
       candidate_key: `${decision.decisionId}:${lane.signalType}`,
@@ -332,9 +223,20 @@ function recordPerpPilotCandidates(decision, market) {
         decision_id: decision.decisionId,
         asset: market.asset,
         lookback_minutes: PILOT_LOOKBACK_MINUTES,
-        no_trade_min_short_edge_pct: NO_TRADE_MIN_SHORT_EDGE_PCT,
-        score_components: lane.scoreComponents,
+        score_components: {
+          eligibility_score: lane.eligibilityScore,
+          setup_quality_score: lane.setupQualityScore,
+          execution_quality_score: lane.executionQualityScore,
+          composite_score: lane.compositeScore,
+          score_gap_vs_no_trade: lane.scoreGapVsNoTrade,
+        },
         metrics: decision.metrics,
+        regime_family: decision.regimeTag,
+        setup_family: lane.setupFamily,
+        expected_edge_pct: lane.expectedEdgePct,
+        expected_edge_after_costs_pct: lane.expectedEdgeAfterCostsPct,
+        cost_hurdle_pct: lane.costHurdlePct,
+        time_bucket: decision.metrics.timeBucket,
       },
     });
   }
@@ -369,9 +271,11 @@ async function main() {
 
     const pilotMarketMap = new Map((markets || []).filter(m => PILOT_ASSETS.includes(m.asset)).map(m => [m.asset, m]));
     if (pilotMarketMap.size > 0) {
-      const historyByAsset = getPerpHistory(Array.from(pilotMarketMap.keys())).assets || {};
+      const historyResponse = getPerpHistory(Array.from(pilotMarketMap.keys()));
+      const historyByAsset = historyResponse.assets || {};
+      const basketMetrics = computeBasketMetrics(historyByAsset);
       for (const [asset, market] of pilotMarketMap.entries()) {
-        const decision = computePilotDecision(market, historyByAsset[asset] || [], ts);
+        const decision = computePerpsDecision({ market, historyRows: historyByAsset[asset] || [], ts, basketMetrics });
         recordPerpPilotCandidates(decision, market);
       }
     }
