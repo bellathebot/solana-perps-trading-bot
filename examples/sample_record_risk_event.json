@@ -1,0 +1,13 @@
+{
+  "ts": "2026-04-06T00:00:00.000Z",
+  "product_type": "perps",
+  "event_type": "perp_entry_risk_guard_block",
+  "severity": "warning",
+  "scope": "executor",
+  "scope_key": "perps-auto-trade.mjs",
+  "message": "example risk guard block",
+  "metadata": {
+    "symbol": "SOL",
+    "reason": "example"
+  }
+}
