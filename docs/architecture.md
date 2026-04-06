@@ -19,11 +19,20 @@ The exported perps stack has four main layers:
 
 ## Analytics
 
-`trading_system/trading_db.py`, `trading_system/trading_db_cli.py`, and `trading_system/sync_trading_db.py` store and retrieve runtime state.
+`trading_system/trading_db.py` is the shared SQLite analytics core.
+
+Public perps-facing entrypoints:
+- `trading_system/perps_db_cli.py`
+- `trading_system/perps_sync_db.py`
+- `trading_system/daily_analytics_report.py`
+
+Shared internal bridge still present in repo:
+- `trading_system/trading_db_cli.py`
+- `trading_system/sync_trading_db.py`
 
 ## Messaging / approvals
 
-`trading_system/perps_telegram_notifier.py`, `trading_system/perps_live_approval_bridge.py`, and `trading_system/telegram_trade_reply_bridge.py` handle operator-facing notifications and commands.
+`trading_system/perps_telegram_notifier.py` and `trading_system/perps_live_approval_bridge.py` handle operator-facing notifications and approval state.
 
 ## Adapter scaffold
 
