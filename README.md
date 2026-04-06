@@ -118,3 +118,17 @@ npm run check:node
 npm run check:harness
 npm run test:public
 ```
+
+## Upgrade plan
+
+- Detailed execution plan: `docs/plans/2026-04-06-perps-trader-upgrade-plan.md`
+
+## Recently implemented improvements
+
+- richer monitor features: multi-timeframe returns, realized volatility, intraday reference, relative strength/weakness, time buckets
+- explicit multi-gate lane scoring: eligibility, setup quality, execution quality
+- expected edge after costs and score-gap-vs-no-trade embedded into candidate metadata
+- stronger policy generation from paper candidate outcomes and realized paper fills
+- smarter exits: partial take profit, trailing-stop style close after partial, time stop, degradation exit
+- more realistic simulation: volatility/liquidity-aware drift and partial-fill behavior
+- portfolio-level controls: correlated-position cap and slowdown after clustered losses
