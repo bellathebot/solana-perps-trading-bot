@@ -30,6 +30,7 @@ jobs:
 
       - name: Node syntax checks
         run: |
+          node --check perps-signal-engine.mjs
           node --check perps-monitor.mjs
           node --check perps-auto-trade.mjs
           node --check trading_system/perps_live_execution_adapter.mjs
