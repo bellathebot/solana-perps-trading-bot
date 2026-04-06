@@ -20,4 +20,10 @@ Quick start:
 cp config/perps-bot.example.json config/local.json
 ```
 
+Then initialize/sync the DB:
+
+```bash
+PYTHONPATH=. python trading_system/perps_sync_db.py --db ~/.trading-data/trading.db --data-dir ~/.trading-data
+```
+
 The public export includes the perps notifier and perps approval bridge, but not the older spot-only Telegram review tooling.
