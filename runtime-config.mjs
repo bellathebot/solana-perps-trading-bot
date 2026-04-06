@@ -22,7 +22,7 @@ const cfg = (key, fallback) => process.env[key] || CONFIG[key] || fallback;
 export const BOT_HOME = cfg('HERMES_PERPS_BOT_HOME', process.env.HOME || REPO_ROOT);
 export const DATA_DIR = cfg('PERPS_AUTO_TRADE_DATA_DIR', path.join(BOT_HOME, '.trading-data'));
 export const DB_PATH = cfg('PERPS_AUTO_TRADE_DB_PATH', path.join(DATA_DIR, 'trading.db'));
-export const DB_CLI = cfg('PERPS_AUTO_TRADE_DB_CLI', path.join(REPO_ROOT, 'trading_system', 'trading_db_cli.py'));
+export const DB_CLI = cfg('PERPS_AUTO_TRADE_DB_CLI', path.join(REPO_ROOT, 'trading_system', 'perps_db_cli.py'));
 export const JUP_BIN = cfg('JUP_BIN', 'jup');
 export const HELIUS_BIN = cfg('HELIUS_BIN', 'helius');
 export const TELEGRAM_TOKEN_FILE = cfg('TELEGRAM_TOKEN_FILE', path.join(REPO_ROOT, 'telegram.txt'));
