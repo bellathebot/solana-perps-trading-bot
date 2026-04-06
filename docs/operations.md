@@ -16,4 +16,5 @@ node trading_system/perps_live_execution_adapter_harness.mjs
 
 - The public repo keeps the perps-facing notifier and perps approval bridge.
 - Spot-only operator review tooling was intentionally left out of this export.
-- `perps_db_cli.py` and `perps_sync_db.py` are perps-facing wrappers around the shared SQLite layer.
+- `perps_db_cli.py` is the intended public perps-only CLI surface.
+- `trading_db_cli.py` remains in the repo as a shared internal bridge dependency and may be further split later.
