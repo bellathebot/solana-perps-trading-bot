@@ -26,7 +26,7 @@ jobs:
 
       - name: Python compile checks
         run: |
-          python -m py_compile             trading_system/perps_db_cli.py             trading_system/perps_sync_db.py             trading_system/runtime_config.py             trading_system/perps_telegram_notifier.py             trading_system/perps_live_approval_bridge.py             trading_system/trading_db_cli.py             trading_system/sync_trading_db.py             trading_system/daily_analytics_report.py             trading_system/perps_live_adapter_dry_run_preflight.py             trading_system/perps_readiness_preflight.py             trading_system/perps_readiness_adapter_summary.py
+          python -m py_compile             trading_system/perps_db_impl.py             trading_system/perps_core.py             trading_system/perps_db_cli.py             trading_system/perps_sync_db.py             trading_system/runtime_config.py             trading_system/perps_telegram_notifier.py             trading_system/perps_live_approval_bridge.py             trading_system/trading_db_cli.py             trading_system/sync_trading_db.py             trading_system/daily_analytics_report.py             trading_system/perps_live_adapter_dry_run_preflight.py             trading_system/perps_readiness_preflight.py             trading_system/perps_readiness_adapter_summary.py
 
       - name: Node syntax checks
         run: |
@@ -37,3 +37,6 @@ jobs:
 
       - name: Adapter harness
         run: node trading_system/perps_live_execution_adapter_harness.mjs
+
+      - name: Public perps tests
+        run: PYTHONPATH=. python -m unittest tests.test_public_perps_surface
