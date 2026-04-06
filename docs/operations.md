@@ -20,3 +20,9 @@ node trading_system/perps_live_execution_adapter_harness.mjs
 - `perps_core.py` is the smaller public perps-facing Python module surface.
 - `perps_db_cli.py` is the intended public perps-only CLI surface.
 - `examples/commands.md` contains copy/paste public CLI examples.
+
+## Validation shortcut
+
+```bash
+npm run validate
+```
