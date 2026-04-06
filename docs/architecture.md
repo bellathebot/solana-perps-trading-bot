@@ -19,11 +19,10 @@ The exported perps stack has four main layers:
 
 ## Analytics
 
-Shared underlying SQLite implementation:
-- `trading_system/trading_db.py`
+Public perps-facing implementation surface:
+- `trading_system/perps_db_impl.py`
 
 Public perps-facing module surface:
-- `trading_system/perps_db_impl.py`
 - `trading_system/perps_core.py`
 
 Public perps-facing entrypoints:
@@ -31,9 +30,7 @@ Public perps-facing entrypoints:
 - `trading_system/perps_sync_db.py`
 - `trading_system/daily_analytics_report.py`
 
-Shared internal bridge still present in repo:
-- `trading_system/trading_db_cli.py`
-- `trading_system/sync_trading_db.py`
+The public runtime path no longer depends on the older mixed `trading_db.py` / `trading_db_cli.py` / `sync_trading_db.py` files.
 
 ## Messaging / approvals
 
