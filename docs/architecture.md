@@ -19,7 +19,11 @@ The exported perps stack has four main layers:
 
 ## Analytics
 
-`trading_system/trading_db.py` is the shared SQLite analytics core.
+Shared underlying SQLite implementation:
+- `trading_system/trading_db.py`
+
+Public perps-facing module surface:
+- `trading_system/perps_core.py`
 
 Public perps-facing entrypoints:
 - `trading_system/perps_db_cli.py`
