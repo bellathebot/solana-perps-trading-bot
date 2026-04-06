@@ -1,5 +1,7 @@
 # Solana Perps Trading Bot
 
+[![validate](https://github.com/bellathebot/solana-perps-trading-bot/actions/workflows/validate.yml/badge.svg)](https://github.com/bellathebot/solana-perps-trading-bot/actions/workflows/validate.yml)
+
 A paper-first, supervised-live Solana perpetuals trading stack built around Jupiter perps monitoring, SQLite-backed analytics, and Telegram approval workflows.
 
 This repository packages the current perps-trading work into a standalone project without local runtime secrets, wallet keys, Telegram tokens, SQLite contents, or machine-specific service state. The public export intentionally excludes spot-only operator tooling that is not required for the perps workflow.
@@ -20,6 +22,7 @@ This repository packages the current perps-trading work into a standalone projec
 - Stable enough to run locally:
   - `perps-monitor.mjs`
   - `perps-auto-trade.mjs`
+  - `trading_system/perps_core.py`
   - `trading_system/perps_db_cli.py`
   - `trading_system/perps_sync_db.py`
   - `trading_system/perps_telegram_notifier.py`
@@ -30,7 +33,7 @@ This repository packages the current perps-trading work into a standalone projec
   - true live order placement path
 - Still shared/internal-leaning:
   - parts of `trading_system/trading_db.py`
-  - parts of `trading_system/trading_db_cli.py`
+  - compatibility stubs retained to keep the public export runnable
 
 ## OSS roadmap
 
@@ -51,7 +54,7 @@ Later:
 
 ## Release snapshot
 
-- Current export line: `v0.1.0`
+- Current export line: `v0.1.1`
 - Public posture: paper-first, supervised-live-prep
 - Pilot universe: `SOL`, `BTC`, `ETH`
 - Live adapter state: scaffold only / fail-closed
@@ -69,6 +72,7 @@ Later:
 
 - `perps-monitor.mjs` — polls Jupiter perps markets, positions, and history, then records market/account state and perps candidate rows
 - `perps-auto-trade.mjs` — paper-first perps executor with explicit live gating and recovery journaling
+- `trading_system/perps_core.py` — smaller public perps-facing Python module surface over the broader shared SQLite layer
 - `trading_system/perps_db_cli.py` — perps-only public CLI surface for SQLite reads/writes used by the perps stack
 - `trading_system/perps_sync_db.py` — perps-facing sync wrapper for file/log ingestion into SQLite
 - `trading_system/perps_telegram_notifier.py` — outbound Telegram notifications for executor and risk events
@@ -77,15 +81,17 @@ Later:
 - `trading_system/run_perps_cycle.sh` — repo-local orchestration script for the monitor/executor/notifier cycle
 - `trading_system/daily_analytics_report.py` — perps-focused SQLite reporting summary
 
-## Research and design docs included
+## Docs and references
 
 - `docs/plans/2026-03-17-24-7-trading-roadmap.md`
 - `docs/plans/2026-03-23-intraday-strategy-redesign.md`
 - `docs/research/playbook-snapshot.md`
+- `docs/reference/perps-schema.md`
 - `trading_system/perps_live_execution_adapter_contract.md`
 - `trading_system/perps_jupiter_live_handoff_checklist.md`
 - `CHANGELOG.md`
 - `RELEASE_NOTES_v0.1.0.md`
+- `RELEASE_NOTES_v0.1.1.md`
 
 ## Quick start
 
@@ -100,7 +106,7 @@ node perps-auto-trade.mjs
 ## Validation
 
 ```bash
-python -m py_compile trading_system/perps_db_cli.py trading_system/perps_sync_db.py trading_system/perps_telegram_notifier.py trading_system/perps_live_approval_bridge.py trading_system/daily_analytics_report.py
+python -m py_compile trading_system/perps_core.py trading_system/perps_db_cli.py trading_system/perps_sync_db.py trading_system/perps_telegram_notifier.py trading_system/perps_live_approval_bridge.py trading_system/daily_analytics_report.py
 node --check perps-monitor.mjs
 node --check perps-auto-trade.mjs
 node trading_system/perps_live_execution_adapter_harness.mjs
