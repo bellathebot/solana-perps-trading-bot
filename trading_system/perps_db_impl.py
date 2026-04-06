@@ -653,32 +653,130 @@ def get_recent_perp_market_history(db_path: Path | str, minutes: int = 180, asse
         conn.close()
 
 
+def _future_price(conn: sqlite3.Connection, symbol: str, ts: str, minutes: int) -> float | None:
+    try:
+        upper_ts = (datetime.fromisoformat(ts.replace('Z', '+00:00')) + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+    except Exception:
+        return None
+    row = conn.execute(
+        '''
+        SELECT price_usd
+        FROM perp_market_snapshots
+        WHERE asset = ? AND ts > ? AND ts <= ?
+        ORDER BY ts DESC LIMIT 1
+        ''',
+        (symbol, ts, upper_ts),
+    ).fetchone()
+    return _to_float(row['price_usd'], None) if row else None
+
+
+def _candidate_forward_stats(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute(
+        '''
+        SELECT ts, symbol, signal_type, side, price, score, metadata_json
+        FROM signal_candidates
+        WHERE COALESCE(product_type, 'perps') = 'perps'
+          AND signal_type != 'perp_no_trade'
+        ORDER BY ts DESC
+        LIMIT 400
+        '''
+    ).fetchall()
+    grouped = defaultdict(lambda: {'count': 0, 'wins': 0, 'sum_forward_return_pct': 0.0, 'sum_edge_after_costs': 0.0})
+    for row in rows:
+        price = _to_float(row['price'], None)
+        future = _future_price(conn, row['symbol'], row['ts'], 60)
+        if not price or future is None:
+            continue
+        side = (row['side'] or '').lower()
+        forward_return = ((price - future) / price) * 100 if side == 'sell' else ((future - price) / price) * 100
+        metadata = _parse_json(row['metadata_json'])
+        edge_after_costs = _to_float(metadata.get('expected_edge_after_costs_pct'), 0.0)
+        bucket = grouped[row['signal_type']]
+        bucket['count'] += 1
+        bucket['wins'] += 1 if forward_return > 0 else 0
+        bucket['sum_forward_return_pct'] += forward_return
+        bucket['sum_edge_after_costs'] += edge_after_costs
+    summary = {}
+    for signal_type, agg in grouped.items():
+        count = agg['count']
+        summary[signal_type] = {
+            'candidate_count': count,
+            'win_rate': round((agg['wins'] / count), 6) if count else 0.0,
+            'avg_forward_return_pct': round((agg['sum_forward_return_pct'] / count), 6) if count else 0.0,
+            'avg_edge_after_costs_pct': round((agg['sum_edge_after_costs'] / count), 6) if count else 0.0,
+        }
+    return summary
+
+
 def get_strategy_execution_policy(db_path: Path | str, min_trades: int = 2, min_realized_pnl_usd: float = 0.0) -> dict:
     init_db(db_path)
     conn = connect(db_path)
     try:
         fills = conn.execute(
-            "SELECT COUNT(*) AS fill_count, ROUND(COALESCE(SUM(realized_pnl_usd), 0), 6) AS realized_pnl_usd FROM perp_fills WHERE mode = 'paper' AND COALESCE(strategy_tag, '') LIKE 'tiny_live_pilot%'"
-        ).fetchone()
-        approved = int(fills['fill_count'] or 0) >= int(min_trades) and _to_float(fills['realized_pnl_usd']) >= float(min_realized_pnl_usd)
+            '''
+            SELECT strategy_tag, COUNT(*) AS fill_count, ROUND(COALESCE(SUM(realized_pnl_usd), 0), 6) AS realized_pnl_usd
+            FROM perp_fills
+            WHERE mode = 'paper'
+            GROUP BY strategy_tag
+            '''
+        ).fetchall()
+        fill_by_strategy = {row['strategy_tag']: dict(row) for row in fills}
+        candidate_stats = _candidate_forward_stats(conn)
+        breakdown = []
+        paused = []
+        for signal_type in sorted(set(list(candidate_stats.keys()) + list(fill_by_strategy.keys()))):
+            fill_row = fill_by_strategy.get(signal_type, {})
+            cand_row = candidate_stats.get(signal_type, {})
+            item = {
+                'strategy_tag': signal_type,
+                'trade_count': int(fill_row.get('fill_count', 0) or 0),
+                'realized_pnl_usd': _to_float(fill_row.get('realized_pnl_usd'), 0.0),
+                'candidate_count': int(cand_row.get('candidate_count', 0) or 0),
+                'win_rate': _to_float(cand_row.get('win_rate'), 0.0),
+                'avg_forward_return_pct': _to_float(cand_row.get('avg_forward_return_pct'), 0.0),
+                'avg_edge_after_costs_pct': _to_float(cand_row.get('avg_edge_after_costs_pct'), 0.0),
+            }
+            item['eligible_for_promotion'] = (
+                item['candidate_count'] >= max(5, min_trades)
+                and item['win_rate'] >= 0.52
+                and item['avg_edge_after_costs_pct'] >= 0.05
+                and item['realized_pnl_usd'] >= min_realized_pnl_usd
+            )
+            breakdown.append(item)
+            if item['candidate_count'] >= max(5, min_trades) and (item['win_rate'] < 0.45 or item['avg_edge_after_costs_pct'] < 0):
+                paused.append(item)
+
         best = conn.execute(
             '''
-            SELECT symbol, signal_type, score, ts FROM signal_candidates
-            WHERE COALESCE(product_type, 'perps') = 'perps' AND signal_type IN ('perp_short_continuation', 'perp_short_failed_bounce')
+            SELECT symbol, signal_type, score, ts, metadata_json
+            FROM signal_candidates
+            WHERE COALESCE(product_type, 'perps') = 'perps' AND signal_type != 'perp_no_trade'
             ORDER BY ts DESC, score DESC LIMIT 1
             '''
         ).fetchone()
+        best_meta = _parse_json(best['metadata_json']) if best else {}
+        best_stats = next((row for row in breakdown if row['strategy_tag'] == best['signal_type']), None) if best else None
+        approved = bool(best and best_stats and best_stats['eligible_for_promotion'])
+        blockers = [] if approved else ['policy_thresholds_not_met']
+        if best_stats and best_stats['candidate_count'] < max(5, min_trades):
+            blockers.append('insufficient_sample_size')
+        if best_stats and best_stats['avg_edge_after_costs_pct'] < 0.05:
+            blockers.append('expected_edge_after_costs_below_threshold')
+        if best_stats and best_stats['win_rate'] < 0.52:
+            blockers.append('win_rate_below_threshold')
         return {
-            'breakdown': [],
-            'paused_strategies': [],
+            'breakdown': breakdown,
+            'paused_strategies': paused,
             'tiny_live_pilot_decision': {
-                'approved': bool(approved and best),
+                'approved': approved,
                 'mode': 'paper',
                 'product_type': 'perps',
                 'strategy': best['signal_type'] if (approved and best) else 'perp_no_trade',
                 'symbol': best['symbol'] if (approved and best) else None,
-                'reason': 'approved_from_public_perps_db_impl' if (approved and best) else 'public_perps_export_default_paper_only',
-                'blockers': [] if (approved and best) else ['paper_only_public_export'],
+                'reason': 'approved_from_public_perps_db_impl' if (approved and best) else 'policy_thresholds_not_met',
+                'blockers': blockers,
+                'expected_edge_after_costs_pct': _to_float(best_meta.get('expected_edge_after_costs_pct'), 0.0),
+                'score_gap_vs_no_trade': _to_float(best_meta.get('score_gap_vs_no_trade'), 0.0),
             },
         }
     finally:
@@ -704,7 +802,7 @@ def get_perp_executor_state(db_path: Path | str, lookback_minutes: int = 240, an
                    liquidity, quote_price_impact, score, regime_tag, decision_id, status, reason, metadata_json
             FROM signal_candidates
             WHERE ts >= ? AND COALESCE(product_type, 'perps') = 'perps' AND decision_id IS NOT NULL
-              AND signal_type IN ('perp_short_continuation', 'perp_short_failed_bounce', 'perp_no_trade')
+              AND signal_type IN ('perp_short_continuation', 'perp_short_failed_bounce', 'perp_long_continuation', 'perp_long_breakout_retest', 'perp_no_trade')
             ORDER BY ts DESC, decision_id, score DESC
             ''',
             (since_ts,),
@@ -717,18 +815,22 @@ def get_perp_executor_state(db_path: Path | str, lookback_minutes: int = 240, an
         for decision_id, rows in grouped.items():
             lanes = []
             best_short_lane = None
+            best_action_lane = None
             rep = rows[0]
             for row in rows:
                 lane = dict(row)
                 lane['metadata'] = _parse_json(row['metadata_json'])
                 lanes.append(lane)
+                if lane['signal_type'] != 'perp_no_trade' and (best_action_lane is None or _to_float(lane.get('score')) > _to_float(best_action_lane.get('score'))):
+                    best_action_lane = lane
                 if lane['signal_type'] in ('perp_short_continuation', 'perp_short_failed_bounce'):
                     if best_short_lane is None or _to_float(lane.get('score')) > _to_float(best_short_lane.get('score')):
                         best_short_lane = lane
+                if lane['signal_type'] != 'perp_no_trade':
                     key = (lane['symbol'], lane['signal_type'], 60)
                     competition_map[key]['sum_score'] += _to_float(lane.get('score'))
                     competition_map[key]['count'] += 1
-            decisions.append({'decision_id': decision_id, 'ts': rep['ts'], 'symbol': rep['symbol'], 'market': rep['market'], 'regime_tag': rep['regime_tag'], 'price': rep['price'], 'lanes': lanes, 'best_short_lane': best_short_lane})
+            decisions.append({'decision_id': decision_id, 'ts': rep['ts'], 'symbol': rep['symbol'], 'market': rep['market'], 'regime_tag': rep['regime_tag'], 'price': rep['price'], 'lanes': lanes, 'best_short_lane': best_short_lane, 'best_action_lane': best_action_lane})
         decisions.sort(key=lambda x: x['ts'], reverse=True)
         latest_markets = [dict(r) for r in conn.execute(
             '''
