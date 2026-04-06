@@ -176,5 +176,5 @@ PYTHONPATH=. python trading_system/perps_db_cli.py perp-executor-state --db ~/.t
 
 ## Notes
 
-- The public repo still ships a broader shared `trading_db.py` implementation underneath this interface.
-- The long-term roadmap is to keep shrinking that shared surface into cleaner perps-only modules.
+- The public repo now routes its main runtime path through `trading_system/perps_db_impl.py`.
+- Historical planning docs may still mention older mixed file names, but the active public runtime path is perps-native.
