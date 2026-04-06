@@ -20,6 +20,5 @@ node "$ROOT/perps-monitor.mjs"
 node "$ROOT/perps-auto-trade.mjs"
 python "$ROOT/trading_system/perps_telegram_notifier.py"
 python "$ROOT/trading_system/perps_live_approval_bridge.py"
-python "$ROOT/trading_system/telegram_trade_reply_bridge.py"
 
 echo "[$(date --iso-8601=seconds)] finished perps runtime cycle"
