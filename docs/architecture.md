@@ -23,6 +23,7 @@ Shared underlying SQLite implementation:
 - `trading_system/trading_db.py`
 
 Public perps-facing module surface:
+- `trading_system/perps_db_impl.py`
 - `trading_system/perps_core.py`
 
 Public perps-facing entrypoints:
