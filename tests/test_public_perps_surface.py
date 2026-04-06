@@ -38,6 +38,35 @@ class PublicPerpsSurfaceTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(payload, [])
 
+
+    def test_perps_db_cli_strategy_controls_on_empty_db(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'test.db'
+            result = subprocess.run(
+                ['python', str(ROOT / 'trading_system' / 'perps_db_cli.py'), 'strategy-controls', '--db', str(db_path)],
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PYTHONPATH': str(ROOT)},
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertIn('tiny_live_pilot_decision', payload)
+            self.assertIn('approved', payload['tiny_live_pilot_decision'])
+
+    def test_perps_sync_db_handles_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'test.db'
+            data_dir = Path(tmp) / 'data'
+            data_dir.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(
+                ['python', str(ROOT / 'trading_system' / 'perps_sync_db.py'), '--db', str(db_path), '--data-dir', str(data_dir)],
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PYTHONPATH': str(ROOT)},
+                check=True,
+            )
+            self.assertIn('Perps DB sync complete', result.stdout)
+
     def test_impl_and_core_export_expected_symbols(self):
         import trading_system.perps_core as perps_core
         import trading_system.perps_db_impl as perps_db_impl
