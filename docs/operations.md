@@ -26,3 +26,5 @@ node trading_system/perps_live_execution_adapter_harness.mjs
 ```bash
 npm run validate
 ```
+
+- `perps-signal-engine.mjs` contains the richer feature and lane-generation logic used by the monitor.
