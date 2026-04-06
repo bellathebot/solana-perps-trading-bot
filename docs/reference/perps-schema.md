@@ -178,3 +178,20 @@ PYTHONPATH=. python trading_system/perps_db_cli.py perp-executor-state --db ~/.t
 
 - The public repo now routes its main runtime path through `trading_system/perps_db_impl.py`.
 - Historical planning docs may still mention older mixed file names, but the active public runtime path is perps-native.
+
+## Richer candidate metadata
+
+Perps candidate rows now commonly include these metadata fields:
+- `regime_family`
+- `setup_family`
+- `eligibility_score`
+- `setup_quality_score`
+- `execution_quality_score`
+- `expected_edge_pct`
+- `expected_edge_after_costs_pct`
+- `cost_hurdle_pct`
+- `score_gap_vs_no_trade`
+- `time_bucket`
+- `market_metrics.realizedVolPct`
+- `market_metrics.relativeStrengthVsBasket`
+- `market_metrics.distanceFromReferencePct`
