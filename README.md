@@ -15,6 +15,40 @@ This repository packages the current perps-trading work into a standalone projec
 | True live perps order placement | scaffold only | adapter contract/harness exist, but real order submission is intentionally unimplemented |
 | Public OSS portability | partial | main entrypoints are portable; some shared internals still reflect the broader source runtime |
 
+## Stability guide
+
+- Stable enough to run locally:
+  - `perps-monitor.mjs`
+  - `perps-auto-trade.mjs`
+  - `trading_system/perps_db_cli.py`
+  - `trading_system/perps_sync_db.py`
+  - `trading_system/perps_telegram_notifier.py`
+  - `trading_system/perps_live_approval_bridge.py`
+  - `trading_system/daily_analytics_report.py`
+- Intentionally scaffolded:
+  - `trading_system/perps_live_execution_adapter.mjs`
+  - true live order placement path
+- Still shared/internal-leaning:
+  - parts of `trading_system/trading_db.py`
+  - parts of `trading_system/trading_db_cli.py`
+
+## OSS roadmap
+
+Short-term:
+- keep public perps workflow stable and reproducible
+- maintain syntax/fixture validation in GitHub Actions
+- continue shrinking mixed legacy/shared runtime surfaces
+
+Mid-term:
+- split truly perps-only DB/service interfaces out of broader shared modules
+- add perps-specific tests that do not depend on the larger internal runtime history
+- improve configuration docs for non-source-machine setups
+
+Later:
+- wire a real live adapter behind the documented contract
+- add stronger reconciliation/integration tests for supervised live flows
+- publish cleaner schema docs for perps tables and event types
+
 ## Release snapshot
 
 - Current export line: `v0.1.0`
@@ -35,7 +69,7 @@ This repository packages the current perps-trading work into a standalone projec
 
 - `perps-monitor.mjs` — polls Jupiter perps markets, positions, and history, then records market/account state and perps candidate rows
 - `perps-auto-trade.mjs` — paper-first perps executor with explicit live gating and recovery journaling
-- `trading_system/perps_db_cli.py` — perps-facing CLI bridge wrapper for the shared SQLite layer
+- `trading_system/perps_db_cli.py` — perps-only public CLI surface for SQLite reads/writes used by the perps stack
 - `trading_system/perps_sync_db.py` — perps-facing sync wrapper for file/log ingestion into SQLite
 - `trading_system/perps_telegram_notifier.py` — outbound Telegram notifications for executor and risk events
 - `trading_system/perps_live_approval_bridge.py` — reads Telegram replies and updates perps approval/command bridge files
