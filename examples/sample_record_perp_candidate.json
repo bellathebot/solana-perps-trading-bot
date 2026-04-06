@@ -1,0 +1,14 @@
+{
+  "ts": "2026-04-06T00:00:00.000Z",
+  "decision_id": "example-sol-short-001",
+  "signal_type": "perp_short_continuation",
+  "symbol": "SOL",
+  "product_type": "perps",
+  "entry_score": 78,
+  "edge_pct": 0.62,
+  "status": "candidate",
+  "reason": "example payload",
+  "metadata": {
+    "source": "examples"
+  }
+}
