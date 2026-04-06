@@ -947,7 +947,7 @@ function reconcileJournalWithState(state, journal) {
     let matchingFills = recentFills.filter(fill => fillMatchesAction(fill, action));
     let matchingPosition = openPositions.find(position => position.position_key === action.position_key) || null;
 
-    if (action.action_type === 'open_short' && action.status === 'partial_fill_pending' && matchingPosition && action.plan_snapshot) {
+    if (String(action.action_type || '').startsWith('open_') && action.status === 'partial_fill_pending' && matchingPosition && action.plan_snapshot) {
       const filledNotionalUsd = safeNumber(matchingPosition.notional_usd, safeNumber(matchingPosition.size_usd, 0)) || 0;
       const requestedNotionalUsd = safeNumber(action.intended_action?.requested_notional_usd, safeNumber(action.plan_snapshot.paperNotional, 0)) || 0;
       const remainingNotionalUsd = Math.max(0, requestedNotionalUsd - filledNotionalUsd);
@@ -960,7 +960,7 @@ function reconcileJournalWithState(state, journal) {
             order_key: cancelOrderKey,
             position_key: action.position_key,
             asset: action.symbol,
-            side: 'sell',
+            side: action.intended_action?.side || 'sell',
             order_type: 'cancel',
             status: 'cancelled',
             size_usd: remainingNotionalUsd,
@@ -989,7 +989,7 @@ function reconcileJournalWithState(state, journal) {
             order_key: `${action.action_key}:cancel:${replacementIndex}`,
             position_key: action.position_key,
             asset: action.symbol,
-            side: 'sell',
+            side: action.intended_action?.side || 'sell',
             order_type: 'cancel_replace',
             status: 'cancelled',
             size_usd: remainingNotionalUsd,
@@ -1211,7 +1211,7 @@ function buildEntryPlan(decision, state) {
 }
 
 function buildSyntheticNoTradeLane(decision, plan, reason) {
-  const sourceLane = plan?.lane || decision.best_short_lane || {};
+  const sourceLane = plan?.lane || decision.best_action_lane || decision.best_short_lane || {};
   return {
     ts: decision.ts,
     source: EXECUTOR_SOURCE,
@@ -1244,8 +1244,8 @@ function buildDecisionChoice(decision, state) {
   const noTradeLane = findNoTradeLane(decision);
   const effectiveNoTradeLane = noTradeLane || (blockedTrade ? buildSyntheticNoTradeLane(decision, plan, plan.blockReason) : null);
   const noTradeScore = safeNumber(effectiveNoTradeLane?.score, 0);
-  const shortScore = blockedTrade ? safeNumber(decision.best_short_lane?.score, 0) : safeNumber(plan?.compositeScore, 0);
-  const chooseNoTrade = Boolean(effectiveNoTradeLane) && (blockedTrade || noTradeScore >= shortScore);
+  const actionScore = blockedTrade ? safeNumber(decision.best_action_lane?.score, safeNumber(decision.best_short_lane?.score, 0)) : safeNumber(plan?.compositeScore, 0);
+  const chooseNoTrade = Boolean(effectiveNoTradeLane) && (blockedTrade || noTradeScore >= actionScore);
   if (chooseNoTrade) {
     return {
       type: 'no_trade',
@@ -1301,8 +1301,12 @@ function currentPriceForPosition(position, marketMap) {
   return { ok: true, price, marketState };
 }
 
-function pnlForShort(entryPrice, currentPrice, notionalUsd) {
+function pnlForPosition(side, entryPrice, currentPrice, notionalUsd) {
   if (!entryPrice || !currentPrice || !notionalUsd) return 0;
+  const normalizedSide = String(side || '').toLowerCase();
+  if (normalizedSide === 'buy' || normalizedSide === 'long') {
+    return ((currentPrice - entryPrice) / entryPrice) * notionalUsd;
+  }
   return ((entryPrice - currentPrice) / entryPrice) * notionalUsd;
 }
 
@@ -1353,6 +1357,22 @@ function updatePaperPositionMark(position, currentPrice, unrealizedPnlUsd, exitS
   });
 }
 
+function entryOrderSide(plan) {
+  return plan.side === 'buy' ? 'buy' : 'sell';
+}
+
+function exitOrderSideForPosition(position) {
+  return (position.side === 'buy' || position.side === 'long') ? 'sell' : 'buy';
+}
+
+function actionTypeForPlan(plan) {
+  return plan.side === 'buy' ? 'open_long' : 'open_short';
+}
+
+function positionSideLabel(side) {
+  return side === 'buy' ? 'long' : 'short';
+}
+
 function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice, fillStatus, fillFraction, replacementIndex = 0) {
   const ts = nowIso();
   const strategyTag = `tiny_live_pilot_${plan.signalType}`;
@@ -1379,7 +1399,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
     order_key: orderKey,
     position_key: action.position_key,
     asset: plan.symbol,
-    side: 'sell',
+    side: entryOrderSide(plan),
     order_type: 'market',
     status: fillStatus,
     size_usd: fillNotionalUsd,
@@ -1388,7 +1408,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
     mode: 'paper',
     strategy_tag: strategyTag,
     decision_id: plan.decisionId,
-    reason: `Paper short entry for ${plan.signalType}`,
+    reason: `Paper ${positionSideLabel(plan.side)} entry for ${plan.signalType}`,
     signature: orderKey,
     raw,
   });
@@ -1399,7 +1419,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
     position_key: action.position_key,
     order_key: orderKey,
     asset: plan.symbol,
-    side: 'sell',
+    side: entryOrderSide(plan),
     action: 'open',
     price_usd: fillPrice,
     size_usd: fillNotionalUsd,
@@ -1435,11 +1455,11 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
     updated_ts: ts,
     status: 'open',
     asset: plan.symbol,
-    side: 'sell',
+    side: entryOrderSide(plan),
     collateral_token: 'USDC',
     entry_price_usd: weightedEntryPrice,
     mark_price_usd: fillPrice,
-    liq_price_usd: plan.invalidationPrice * 2,
+    liq_price_usd: plan.side === 'buy' ? plan.invalidationPrice * 0.5 : plan.invalidationPrice * 2,
     size_usd: nextNotional,
     notional_usd: nextNotional,
     margin_used_usd: nextNotional,
@@ -1460,7 +1480,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
   runDbCliWrite('record-trade', {
     ts,
     symbol: plan.symbol,
-    side: 'sell',
+    side: entryOrderSide(plan),
     mode: 'paper',
     simulated: true,
     product_type: 'perps',
@@ -1475,7 +1495,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
     expected_out_amount: String(Math.max(0, fillNotionalUsd - feeUsd)),
     signature: orderKey,
     quote_price_impact: 0,
-    reason: `Paper perp short entry: ${plan.signalType}`,
+    reason: `Paper perp ${positionSideLabel(plan.side)} entry: ${plan.signalType}`,
     strategy_tag: strategyTag,
     cost_basis_usd: fillNotionalUsd,
     validation_mode: plan.metadata?.live_stub ? 'tiny_live_stub' : 'paper',
@@ -1494,7 +1514,7 @@ function recordPaperEntryFill(plan, action, orderKey, fillNotionalUsd, fillPrice
   };
 }
 
-function openPaperShort(plan, state, journal) {
+function openPaperPosition(plan, state, journal) {
   const actionKey = `open:${plan.decisionId}`;
   const existingAction = journal.actions?.[actionKey];
   if (existingAction && !actionIsTerminal(existingAction)) {
@@ -1511,13 +1531,13 @@ function openPaperShort(plan, state, journal) {
   const requestedMarket = getFreshMarket(plan.symbol, latestMarketMap(state.latest_markets));
   if (!requestedMarket.ok) {
     const rejectedAction = upsertJournalAction(journal, actionKey, {
-      action_type: 'open_short',
+      action_type: actionTypeForPlan(plan),
       status: 'rejected_stale_quote',
       symbol: plan.symbol,
       decision_id: plan.decisionId,
       position_key: `paper-perp:${plan.decisionId}`,
       intended_action: {
-        side: 'sell',
+        side: entryOrderSide(plan),
         signal_type: plan.signalType,
         requested_notional_usd: plan.paperNotional,
         requested_price: plan.entryPrice,
@@ -1525,7 +1545,7 @@ function openPaperShort(plan, state, journal) {
       last_risk_decision: requestedMarket.reason,
       terminal: true,
     });
-    recordRiskEvent('perp_entry_stale_quote_rejected', 'warning', `Rejected paper short on ${plan.symbol} due to stale quote`, {
+    recordRiskEvent('perp_entry_stale_quote_rejected', 'warning', `Rejected paper ${positionSideLabel(plan.side)} on ${plan.symbol} due to stale quote`, {
       strategy_family: STRATEGY_FAMILY,
       decision_id: plan.decisionId,
       symbol: plan.symbol,
@@ -1556,14 +1576,14 @@ function openPaperShort(plan, state, journal) {
   const positionKey = `paper-perp:${plan.decisionId}`;
   const orderKey = `${actionKey}:order:1`;
   const action = upsertJournalAction(journal, actionKey, {
-    action_type: 'open_short',
+    action_type: actionTypeForPlan(plan),
     status: 'submitted',
     symbol: plan.symbol,
     decision_id: plan.decisionId,
     position_key: positionKey,
     order_key: orderKey,
     intended_action: {
-      side: 'sell',
+      side: entryOrderSide(plan),
       signal_type: plan.signalType,
       requested_notional_usd: plan.paperNotional,
       requested_price: plan.entryPrice,
@@ -1633,7 +1653,7 @@ function openPaperShort(plan, state, journal) {
       position_key: positionKey,
       status: 'open',
       asset: plan.symbol,
-      side: 'sell',
+      side: entryOrderSide(plan),
       entry_price_usd: actualFillPrice,
       mark_price_usd: actualFillPrice,
       notional_usd: fillResult.nextNotional,
@@ -1648,7 +1668,7 @@ function openPaperShort(plan, state, journal) {
     terminal: status === 'filled',
   });
 
-  recordSystemEvent('perp_executor_decision', 'info', `Opened paper short on ${plan.symbol}`, {
+  recordSystemEvent('perp_executor_decision', 'info', `Opened paper ${positionSideLabel(plan.side)} on ${plan.symbol}`, {
     mode: MODE,
     strategy_family: STRATEGY_FAMILY,
     product_type: 'perps',
@@ -1681,7 +1701,7 @@ function openPaperShort(plan, state, journal) {
   };
 }
 
-function closePaperShort(position, currentPrice, exitReason, options = {}) {
+function closePaperPosition(position, currentPrice, exitReason, options = {}) {
   const ts = new Date().toISOString();
   const raw = position.raw || {};
   const reductionFraction = clamp(safeNumber(options.reduction_fraction, 1) || 1, 0.05, 1);
@@ -1691,7 +1711,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
   const exitNotional = closingQuantity * currentPrice;
   const entryNotional = safeNumber(position.notional_usd, 0);
   const closingEntryNotional = entryNotional * reductionFraction;
-  const grossPnl = pnlForShort(position.entry_price_usd, currentPrice, closingEntryNotional);
+  const grossPnl = pnlForPosition(position.side, position.entry_price_usd, currentPrice, closingEntryNotional);
   const existingRealizedPnlUsd = safeNumber(position.realized_pnl_usd, 0) || 0;
   const existingFeesUsd = safeNumber(position.fees_usd, 0) || 0;
   const openFeeUsd = (safeNumber(raw.risk?.estimated_open_fee_usd, existingFeesUsd) || 0) * reductionFraction;
@@ -1706,7 +1726,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     order_key: orderKey,
     position_key: position.position_key,
     asset: position.asset,
-    side: 'buy',
+    side: exitOrderSideForPosition(position),
     order_type: 'market',
     status: 'filled',
     size_usd: exitNotional,
@@ -1715,7 +1735,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     mode: 'paper',
     strategy_tag: position.strategy_tag,
     decision_id: position.decision_id,
-    reason: `Paper short ${closeKind}: ${exitReason}`,
+    reason: `Paper ${positionSideLabel(position.side)} ${closeKind}: ${exitReason}`,
     signature: orderKey,
     raw: { strategy_family: STRATEGY_FAMILY, exit_reason: exitReason, reduction_fraction: reductionFraction, ...metadataPatch },
   });
@@ -1726,7 +1746,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     position_key: position.position_key,
     order_key: orderKey,
     asset: position.asset,
-    side: 'buy',
+    side: exitOrderSideForPosition(position),
     action: reductionFraction < 0.999999 ? 'reduce' : 'close',
     price_usd: currentPrice,
     size_usd: exitNotional,
@@ -1775,7 +1795,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
       leverage: position.leverage,
       take_profit_price: position.take_profit_price,
       stop_loss_price: position.stop_loss_price,
-      unrealized_pnl_usd: pnlForShort(position.entry_price_usd, currentPrice, nextEntryNotional),
+      unrealized_pnl_usd: pnlForPosition(position.side, position.entry_price_usd, currentPrice, nextEntryNotional),
       realized_pnl_usd: nextRealizedPnlUsd,
       fees_usd: nextFeesUsd,
       funding_usd: position.funding_usd || 0,
@@ -1790,7 +1810,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
   runDbCliWrite('record-trade', {
     ts,
     symbol: position.asset,
-    side: 'buy',
+    side: exitOrderSideForPosition(position),
     mode: 'paper',
     simulated: true,
     product_type: 'perps',
@@ -1805,7 +1825,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     expected_out_amount: String(exitNotional),
     signature: orderKey,
     quote_price_impact: 0,
-    reason: `Paper perp short ${closeKind}: ${exitReason}`,
+    reason: `Paper perp ${positionSideLabel(position.side)} ${closeKind}: ${exitReason}`,
     strategy_tag: position.strategy_tag,
     realized_pnl_usd: realizedPnlUsd,
     cost_basis_usd: closingEntryNotional,
@@ -1814,7 +1834,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     approval_status: (raw.live_stub || raw.risk?.live_stub) ? ((raw.live_approval?.status || raw.risk?.live_approval?.status) || 'telegram_approved') : 'paper_only',
   });
 
-  recordSystemEvent('perp_executor_decision', 'info', `${reductionFraction < 0.999999 ? 'Reduced' : 'Closed'} paper short on ${position.asset}`, {
+  recordSystemEvent('perp_executor_decision', 'info', `${reductionFraction < 0.999999 ? 'Reduced' : 'Closed'} paper ${positionSideLabel(position.side)} on ${position.asset}`, {
     mode: MODE,
     strategy_family: STRATEGY_FAMILY,
     product_type: 'perps',
@@ -1830,7 +1850,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
   });
 
   if (realizedPnlUsd < 0) {
-    recordRiskEvent('perp_paper_loss_realized', 'warning', `Paper short on ${position.asset} ${reductionFraction < 0.999999 ? 'reduced' : 'closed'} at a loss`, {
+    recordRiskEvent('perp_paper_loss_realized', 'warning', `Paper ${positionSideLabel(position.side)} on ${position.asset} ${reductionFraction < 0.999999 ? 'reduced' : 'closed'} at a loss`, {
       strategy_family: STRATEGY_FAMILY,
       decision_id: position.decision_id,
       symbol: position.asset,
@@ -1869,7 +1889,7 @@ function evaluateOpenPositions(state) {
     const currentPrice = currentPriceState.price;
     const entryPrice = safeNumber(position.entry_price_usd, currentPrice);
     const notionalUsd = safeNumber(position.notional_usd, safeNumber(position.size_usd, 0));
-    const unrealizedPnlUsd = pnlForShort(entryPrice, currentPrice, notionalUsd);
+    const unrealizedPnlUsd = pnlForPosition(position.side, entryPrice, currentPrice, notionalUsd);
     updatePaperPositionMark(position, currentPrice, unrealizedPnlUsd);
 
     const heldMinutes = minutesSince(position.opened_ts);
@@ -1881,38 +1901,39 @@ function evaluateOpenPositions(state) {
     const executionTelemetry = position.raw?.execution_telemetry || {};
     const lastDriftBps = Math.abs(safeNumber(executionTelemetry.last_mark_to_entry_drift_bps, 0) || 0);
     const partialTaken = Boolean(position.raw?.partial_take_profit_done);
+    const isLongPosition = position.side === 'buy' || position.side === 'long';
 
-    if (currentPrice >= stopPrice || currentPrice >= invalidationPrice) {
-      const realized = closePaperShort(position, currentPrice, 'stop_or_invalidation_hit');
+    if ((isLongPosition && (currentPrice <= stopPrice || currentPrice <= invalidationPrice)) || (!isLongPosition && (currentPrice >= stopPrice || currentPrice >= invalidationPrice))) {
+      const realized = closePaperPosition(position, currentPrice, 'stop_or_invalidation_hit');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'stop_or_invalidation_hit', realized_pnl_usd: realized });
       continue;
     }
     if (!partialTaken && rMultiple >= PARTIAL_TAKE_PROFIT_R) {
-      const realized = closePaperShort(position, currentPrice, 'partial_take_profit', { reduction_fraction: 0.5, metadataPatch: { partial_take_profit_done: true } });
+      const realized = closePaperPosition(position, currentPrice, 'partial_take_profit', { reduction_fraction: 0.5, metadataPatch: { partial_take_profit_done: true } });
       results.push({ action: 'reduced', symbol: position.asset, reason: 'partial_take_profit', realized_pnl_usd: realized, r_multiple: rMultiple });
       continue;
     }
-    if (currentPrice <= targetPrice) {
-      const realized = closePaperShort(position, currentPrice, 'take_profit_hit');
+    if ((isLongPosition && currentPrice >= targetPrice) || (!isLongPosition && currentPrice <= targetPrice)) {
+      const realized = closePaperPosition(position, currentPrice, 'take_profit_hit');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'take_profit_hit', realized_pnl_usd: realized });
       continue;
     }
     if (partialTaken && rMultiple < TRAILING_STOP_R) {
-      const realized = closePaperShort(position, currentPrice, 'trailing_stop_after_partial');
+      const realized = closePaperPosition(position, currentPrice, 'trailing_stop_after_partial');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'trailing_stop_after_partial', realized_pnl_usd: realized, r_multiple: rMultiple });
       continue;
     }
     if (lastDriftBps > EXECUTION_DEGRADATION_EXIT_BPS) {
-      const realized = closePaperShort(position, currentPrice, 'execution_degradation_exit');
+      const realized = closePaperPosition(position, currentPrice, 'execution_degradation_exit');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'execution_degradation_exit', realized_pnl_usd: realized, last_drift_bps: lastDriftBps });
       continue;
     }
     if (heldMinutes >= MAX_HOLD_MINUTES) {
-      const realized = closePaperShort(position, currentPrice, 'time_stop');
+      const realized = closePaperPosition(position, currentPrice, 'time_stop');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'time_stop', realized_pnl_usd: realized });
       continue;
@@ -1974,15 +1995,16 @@ function symbolFromChoice(choice) {
 
 function summarizeCandidateChoice(choice) {
   if (!choice || !choice.decision) return null;
+  const bestActionLane = choice.decision.best_action_lane || choice.decision.best_short_lane || null;
   const bestShortLane = choice.decision.best_short_lane || null;
   const noTradeLane = findNoTradeLane(choice.decision);
   const selectedLane = choice.type === 'trade'
-    ? (choice.plan?.lane || choice.lane || bestShortLane)
+    ? (choice.plan?.lane || choice.lane || bestActionLane)
     : (choice.lane || noTradeLane || null);
-  const shortScore = safeNumber(choice.plan?.compositeScore, safeNumber(bestShortLane?.score, null));
+  const actionScore = safeNumber(choice.plan?.compositeScore, safeNumber(bestActionLane?.score, safeNumber(bestShortLane?.score, null)));
   const noTradeScore = safeNumber(noTradeLane?.score, safeNumber(choice.lane?.signal_type === 'perp_no_trade' ? choice.lane?.score : null, null));
   const selectedScore = choice.type === 'trade'
-    ? shortScore
+    ? actionScore
     : safeNumber(selectedLane?.score, noTradeScore);
   return {
     type: choice.type,
@@ -1992,11 +2014,13 @@ function summarizeCandidateChoice(choice) {
     selected_signal_type: selectedLane?.signal_type || null,
     selected_score: selectedScore,
     selected_reason: choice.reason || choice.plan?.reason || selectedLane?.reason || null,
+    best_action_signal_type: bestActionLane?.signal_type || null,
+    best_action_score: safeNumber(bestActionLane?.score, null),
     best_short_signal_type: bestShortLane?.signal_type || null,
     best_short_score: safeNumber(bestShortLane?.score, null),
     no_trade_signal_type: noTradeLane?.signal_type || (choice.type === 'no_trade' ? 'perp_no_trade' : null),
     no_trade_score: noTradeScore,
-    score_gap_vs_no_trade: shortScore != null && noTradeScore != null ? Number((shortScore - noTradeScore).toFixed(4)) : null,
+    score_gap_vs_no_trade: actionScore != null && noTradeScore != null ? Number((actionScore - noTradeScore).toFixed(4)) : null,
     blocked_trade: Boolean(choice.plan?.blocked),
     block_reason: choice.plan?.blockReason || null,
     market_age_minutes: safeNumber(choice.plan?.marketAgeMinutes, null),
@@ -2005,6 +2029,7 @@ function summarizeCandidateChoice(choice) {
     take_profit_price: safeNumber(choice.plan?.takeProfitPrice, null),
     paper_notional_usd: safeNumber(choice.plan?.paperNotional, null),
     candidate_strategy: strategyFromChoice(choice),
+    side: choice.plan?.side || selectedLane?.side || null,
   };
 }
 
@@ -2021,7 +2046,7 @@ function processLiveCommand(state) {
         results.push({ position_key: position.position_key, status: 'skipped', reason: currentPriceState.reason });
         continue;
       }
-      closePaperShort(position, currentPriceState.price, 'emergency_flatten_all');
+      closePaperPosition(position, currentPriceState.price, 'emergency_flatten_all');
       results.push({ position_key: position.position_key, status: 'flattened', symbol: position.asset });
     }
     clearLiveCommand(command, 'executed', { results });
@@ -2044,7 +2069,7 @@ function processLiveCommand(state) {
     return { action: 'command_rejected', reason: currentPriceState.reason, command };
   }
   const reductionFraction = command.command_type === 'reduce_position' ? clamp(safeNumber(command.reduction_fraction, 0.5) || 0.5, 0.05, 0.95) : 1;
-  closePaperShort(target, currentPriceState.price, command.command_type === 'reduce_position' ? 'manual_reduce' : 'manual_close', { reduction_fraction: reductionFraction });
+  closePaperPosition(target, currentPriceState.price, command.command_type === 'reduce_position' ? 'manual_reduce' : 'manual_close', { reduction_fraction: reductionFraction });
   clearLiveCommand(command, 'executed', { target_position_key: target.position_key, reduction_fraction: reductionFraction });
   recordSystemEvent('perp_manual_position_command_executed', 'warning', 'Processed manual perp position command', {
     strategy_family: STRATEGY_FAMILY,
@@ -2108,20 +2133,6 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
   }
 
   const plan = choice.plan;
-  if (plan.side !== 'sell') {
-    recordExecutorDecision(choice.decision, choice.lane, 'skipped', 'long_shadow_book_only', {
-      decision_summary: 'shadow_only_long_candidate',
-      side: plan.side,
-    });
-    return {
-      action: 'skip',
-      reason: 'long_shadow_book_only',
-      symbol: plan.symbol,
-      signal_type: plan.signalType,
-      decision_id: plan.decisionId,
-    };
-  }
-
   const entryRisk = evaluateEntryRiskGuards(state, journal, plan);
   if (entryRisk.blocked) {
     recordRiskEvent('perp_entry_risk_guard_block', 'warning', `Risk guard blocked paper perp entry for ${plan.symbol}`, {
@@ -2195,7 +2206,7 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
 
     const livePlan = buildLiveStubPlan(plan, approvedIntent);
     const liveAdapterResponse = submitPerpLiveOrder(liveAdapterRequest);
-    const entryExecution = openPaperShort(livePlan, state, journal);
+    const entryExecution = openPaperPosition(livePlan, state, journal);
     markApprovalIntentTerminal(approvedIntent, 'executed', {
       live_adapter_request: liveAdapterRequest,
       live_adapter_response: liveAdapterResponse,
@@ -2210,19 +2221,22 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
       live_adapter_request: liveAdapterRequest,
       live_adapter_response: liveAdapterResponse,
       live_stub: true,
+      side: plan.side,
     });
-    recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_short_opened', {
+    recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_position_opened', {
       decision_summary: entryExecution.action === 'partial_fill' ? 'trade_partial_fill' : 'trade_opened',
       live_stub: true,
       live_adapter_response: liveAdapterResponse,
+      side: plan.side,
     });
     return { ...entryExecution, live_stub: true, live_adapter_request: liveAdapterRequest, live_adapter_response: liveAdapterResponse };
   }
 
-  const entryExecution = openPaperShort(plan, state, journal);
-  recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_short_opened', {
+  const entryExecution = openPaperPosition(plan, state, journal);
+  recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_position_opened', {
     decision_summary: entryExecution.action === 'partial_fill' ? 'trade_partial_fill' : 'trade_opened',
     live_stub: false,
+    side: plan.side,
   });
   return entryExecution;
 }
