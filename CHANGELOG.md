@@ -31,3 +31,6 @@ Highlights:
 - added `examples/` with public CLI commands and sample payloads
 - removed legacy mixed public files (`trading_db.py`, `trading_db_cli.py`, `sync_trading_db.py`, `accounting_audit.py`)
 - updated bootstrap, CI, and docs to the fully perps-native public path
+- added `perps-signal-engine.mjs` with richer multi-timeframe features and lane scoring
+- upgraded executor gating, exits, and simulation realism
+- added and documented the full perps trader upgrade plan
