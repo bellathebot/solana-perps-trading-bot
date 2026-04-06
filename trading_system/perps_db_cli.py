@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from trading_system.runtime_config import DB_PATH
-from trading_system.trading_db import (
+from trading_system.perps_core import (
     get_perp_executor_state,
     get_perp_open_positions,
     get_perp_summary,
