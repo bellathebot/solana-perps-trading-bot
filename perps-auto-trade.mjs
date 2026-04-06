@@ -78,6 +78,17 @@ const MAX_ESTIMATED_SPREAD_BPS = envFloat('PERPS_AUTO_TRADE_MAX_ESTIMATED_SPREAD
 const MAX_ESTIMATED_SLIPPAGE_BPS = envFloat('PERPS_AUTO_TRADE_MAX_ESTIMATED_SLIPPAGE_BPS', 45, 1, 1000);
 const LIVE_STUB_NOTIONAL_USD = envFloat('PERPS_AUTO_TRADE_LIVE_STUB_NOTIONAL_USD', 1, 0.5, 10);
 const LIVE_APPROVAL_TTL_MINUTES = envInt('PERPS_AUTO_TRADE_LIVE_APPROVAL_TTL_MINUTES', 30, 1, 1440);
+const MIN_ELIGIBILITY_SCORE = envFloat('PERPS_AUTO_TRADE_MIN_ELIGIBILITY_SCORE', 55, 0, 100);
+const MIN_SETUP_QUALITY_SCORE = envFloat('PERPS_AUTO_TRADE_MIN_SETUP_QUALITY_SCORE', 60, 0, 100);
+const MIN_EXECUTION_QUALITY_SCORE = envFloat('PERPS_AUTO_TRADE_MIN_EXECUTION_QUALITY_SCORE', 50, 0, 100);
+const MIN_EXPECTED_EDGE_AFTER_COSTS_PCT = envFloat('PERPS_AUTO_TRADE_MIN_EXPECTED_EDGE_AFTER_COSTS_PCT', 0.05, -5, 5);
+const MIN_SCORE_GAP_VS_NO_TRADE = envFloat('PERPS_AUTO_TRADE_MIN_SCORE_GAP_VS_NO_TRADE', 6, -100, 100);
+const MAX_CORRELATED_POSITIONS_PER_SIDE = envInt('PERPS_AUTO_TRADE_MAX_CORRELATED_POSITIONS_PER_SIDE', 1, 1, 5);
+const LOSS_CLUSTER_SLOWDOWN_COUNT = envInt('PERPS_AUTO_TRADE_LOSS_CLUSTER_SLOWDOWN_COUNT', 2, 1, 10);
+const LOSS_CLUSTER_SLOWDOWN_MINUTES = envInt('PERPS_AUTO_TRADE_LOSS_CLUSTER_SLOWDOWN_MINUTES', 180, 15, 1440);
+const PARTIAL_TAKE_PROFIT_R = envFloat('PERPS_AUTO_TRADE_PARTIAL_TAKE_PROFIT_R', 1, 0.5, 5);
+const TRAILING_STOP_R = envFloat('PERPS_AUTO_TRADE_TRAILING_STOP_R', 1.25, 0.5, 8);
+const EXECUTION_DEGRADATION_EXIT_BPS = envFloat('PERPS_AUTO_TRADE_EXECUTION_DEGRADATION_EXIT_BPS', 90, 10, 500);
 
 function ensureDataDir() {
   if (!fs.existsSync(EFFECTIVE_DATA_DIR)) fs.mkdirSync(EFFECTIVE_DATA_DIR, { recursive: true });
@@ -439,6 +450,12 @@ function evaluateEntryRiskGuards(state, journal, plan) {
   const plannedLeverage = 1;
   const notionalToEquityPct = effectiveEquityUsd > 0 ? (postTradeOpenNotionalUsd / effectiveEquityUsd) * 100 : Infinity;
   const executionEstimates = extractCandidateExecutionEstimates(plan.lane, plan.metadata?.market_snapshot || {}, plan.paperNotional);
+  const openPositions = state.open_positions || [];
+  const sameSidePositions = openPositions.filter(position => String(position.side || '').toLowerCase() === String(plan.side || '').toLowerCase());
+  const recentLosses = (state.recent_fills || []).filter(fill => {
+    const realized = safeNumber(fill.realized_pnl_usd, 0) || 0;
+    return realized < 0 && minutesSince(fill.ts) <= LOSS_CLUSTER_SLOWDOWN_MINUTES;
+  });
 
   if ((safeNumber(equityState.current_drawdown_pct, 0) || 0) >= MAX_ACCOUNT_DRAWDOWN_PCT) {
     return { blocked: true, blockReason: 'account_drawdown_cap_hit', guardContext: { equity: equityState } };
@@ -485,6 +502,28 @@ function evaluateEntryRiskGuards(state, journal, plan) {
       blocked: true,
       blockReason: 'estimated_slippage_too_high',
       guardContext: { execution_estimates: executionEstimates, max_estimated_slippage_bps: MAX_ESTIMATED_SLIPPAGE_BPS },
+    };
+  }
+  if (sameSidePositions.length >= MAX_CORRELATED_POSITIONS_PER_SIDE) {
+    return {
+      blocked: true,
+      blockReason: 'correlated_position_cap_hit',
+      guardContext: {
+        same_side_open_positions: sameSidePositions.length,
+        max_correlated_positions_per_side: MAX_CORRELATED_POSITIONS_PER_SIDE,
+        side: plan.side,
+      },
+    };
+  }
+  if (recentLosses.length >= LOSS_CLUSTER_SLOWDOWN_COUNT) {
+    return {
+      blocked: true,
+      blockReason: 'loss_cluster_slowdown',
+      guardContext: {
+        recent_loss_count: recentLosses.length,
+        slowdown_count: LOSS_CLUSTER_SLOWDOWN_COUNT,
+        slowdown_minutes: LOSS_CLUSTER_SLOWDOWN_MINUTES,
+      },
     };
   }
   return {
@@ -1021,11 +1060,10 @@ function reconcileJournalWithState(state, journal) {
 }
 
 function buildEntryPlan(decision, state) {
-  const lane = decision.best_short_lane;
-  if (!lane || lane.status !== 'candidate') return { blocked: true, blockReason: 'no_candidate_short_lane' };
+  const lane = decision.best_action_lane || decision.best_short_lane;
+  if (!lane || lane.status !== 'candidate') return { blocked: true, blockReason: 'no_candidate_action_lane' };
 
-  const normalizedSymbol = String(decision.symbol || '').trim().toUpperCase();
-  if (!normalizedSymbol || !EXECUTOR_ALLOWLIST.has(normalizedSymbol)) {
+  if (!EXECUTOR_ALLOWLIST.has(decision.symbol)) {
     return {
       blocked: true,
       blockReason: 'symbol_not_allowlisted',
@@ -1034,6 +1072,15 @@ function buildEntryPlan(decision, state) {
       lane,
     };
   }
+
+  const laneMeta = lane.metadata || {};
+  const eligibilityScore = safeNumber(laneMeta.eligibility_score, safeNumber(lane.eligibilityScore, 0)) || 0;
+  const setupQualityScore = safeNumber(laneMeta.setup_quality_score, safeNumber(lane.setupQualityScore, 0)) || 0;
+  const executionQualityScore = safeNumber(laneMeta.execution_quality_score, safeNumber(lane.executionQualityScore, 0)) || 0;
+  const expectedEdgeAfterCostsPct = safeNumber(laneMeta.expected_edge_after_costs_pct, safeNumber(lane.expectedEdgeAfterCostsPct, 0)) || 0;
+  const scoreGapVsNoTrade = safeNumber(laneMeta.score_gap_vs_no_trade, safeNumber(lane.scoreGapVsNoTrade, 0)) || 0;
+  const candidateMetrics = laneMeta.market_metrics || laneMeta.metrics || {};
+
   const marketMap = latestMarketMap(state.latest_markets);
   const marketState = getFreshMarket(decision.symbol, marketMap);
   if (!marketState.ok) {
@@ -1044,8 +1091,23 @@ function buildEntryPlan(decision, state) {
   if (!Number.isFinite(decisionAgeMinutes) || decisionAgeMinutes > MAX_SIGNAL_AGE_MINUTES) {
     return { blocked: true, blockReason: 'stale_signal' };
   }
-  if (safeNumber(lane.score, 0) < ENTRY_SCORE_THRESHOLD) {
+  if (safeNumber(lane.score, safeNumber(lane.compositeScore, 0)) < ENTRY_SCORE_THRESHOLD) {
     return { blocked: true, blockReason: 'score_below_threshold' };
+  }
+  if (eligibilityScore < MIN_ELIGIBILITY_SCORE) {
+    return { blocked: true, blockReason: 'eligibility_score_below_threshold', lane };
+  }
+  if (setupQualityScore < MIN_SETUP_QUALITY_SCORE) {
+    return { blocked: true, blockReason: 'setup_quality_below_threshold', lane };
+  }
+  if (executionQualityScore < MIN_EXECUTION_QUALITY_SCORE) {
+    return { blocked: true, blockReason: 'execution_quality_below_threshold', lane };
+  }
+  if (expectedEdgeAfterCostsPct < MIN_EXPECTED_EDGE_AFTER_COSTS_PCT) {
+    return { blocked: true, blockReason: 'expected_edge_after_costs_below_threshold', lane };
+  }
+  if (scoreGapVsNoTrade < MIN_SCORE_GAP_VS_NO_TRADE) {
+    return { blocked: true, blockReason: 'score_gap_vs_no_trade_too_small', lane };
   }
 
   const noTradeLane = findNoTradeLane(decision);
@@ -1058,22 +1120,23 @@ function buildEntryPlan(decision, state) {
   const analyticsBonus = lane60
     ? clamp((safeNumber(lane60.win_rate, 0.5) - 0.5) * 40 + safeNumber(lane60.avg_edge_pct, 0) * 4, -8, 12)
     : 0;
-  const compositeScore = safeNumber(lane.score, 0) + analyticsBonus - clamp((noTradeScore - 50) / 5, 0, 8);
+  const compositeScore = safeNumber(lane.score, safeNumber(lane.compositeScore, 0)) + analyticsBonus - clamp((noTradeScore - 50) / 5, 0, 8);
   const price = safeNumber(market.price_usd, safeNumber(lane.price, safeNumber(decision.price)));
   if (!price || price <= 0) return { blocked: true, blockReason: 'invalid_price' };
 
-  const metadata = lane.metadata || {};
-  const referenceLevel = safeNumber(lane.reference_level, safeNumber(metadata.metrics?.highRecent, price));
-  const change24h = safeNumber(market.change_pct_24h, safeNumber(metadata.metrics?.change24h, 0));
-  const volume24h = safeNumber(market.volume_usd_24h, safeNumber(metadata.metrics?.volume24h, 0));
-  const stopPct = lane.signal_type === 'perp_short_failed_bounce' ? BASE_STOP_PCT + 0.2 : BASE_STOP_PCT;
-  const targetPct = lane.signal_type === 'perp_short_failed_bounce' ? BASE_TARGET_PCT + 0.4 : BASE_TARGET_PCT;
-  const invalidationPrice = Math.max(
-    price * (1 + (stopPct / 100)),
-    referenceLevel * (1 + (INVALIDATION_BUFFER_PCT / 100)),
-  );
+  const side = lane.side || 'sell';
+  const isLong = side === 'buy';
+  const referenceLevel = safeNumber(lane.reference_level, safeNumber(candidateMetrics.referencePrice, price));
+  const change24h = safeNumber(market.change_pct_24h, safeNumber(candidateMetrics.change24h, 0));
+  const volume24h = safeNumber(market.volume_usd_24h, safeNumber(candidateMetrics.volume24h, 0));
+  const realizedVolPct = safeNumber(candidateMetrics.realizedVolPct, 0);
+  const stopPct = (isLong ? BASE_STOP_PCT : (lane.signal_type === 'perp_short_failed_bounce' ? BASE_STOP_PCT + 0.2 : BASE_STOP_PCT)) + clamp(realizedVolPct * 0.08, 0, 0.6);
+  const targetPct = (isLong ? BASE_TARGET_PCT : (lane.signal_type === 'perp_short_failed_bounce' ? BASE_TARGET_PCT + 0.4 : BASE_TARGET_PCT)) + clamp(Math.abs(expectedEdgeAfterCostsPct) * 0.35, 0, 0.8);
+  const invalidationPrice = isLong
+    ? Math.min(price * (1 - (stopPct / 100)), referenceLevel * (1 - (INVALIDATION_BUFFER_PCT / 100)))
+    : Math.max(price * (1 + (stopPct / 100)), referenceLevel * (1 + (INVALIDATION_BUFFER_PCT / 100)));
   const stopLossPrice = invalidationPrice;
-  const takeProfitPrice = price * (1 - (targetPct / 100));
+  const takeProfitPrice = isLong ? price * (1 + (targetPct / 100)) : price * (1 - (targetPct / 100));
   const paperNotional = Math.min(PAPER_NOTIONAL_USD, MAX_PAPER_NOTIONAL_USD);
   const quantity = paperNotional / price;
   const feeUsd = paperNotional * (ESTIMATED_FEE_BPS / 10000);
@@ -1083,6 +1146,7 @@ function buildEntryPlan(decision, state) {
     blocked: false,
     decisionId: decision.decision_id,
     symbol: decision.symbol,
+    side,
     signalType: lane.signal_type,
     entryPrice: price,
     paperNotional,
@@ -1092,6 +1156,11 @@ function buildEntryPlan(decision, state) {
     invalidationPrice,
     feeUsd,
     compositeScore,
+    eligibilityScore,
+    setupQualityScore,
+    executionQualityScore,
+    expectedEdgeAfterCostsPct,
+    scoreGapVsNoTrade,
     decisionAgeMinutes,
     regimeTag: decision.regime_tag || lane.regime_tag,
     change24h,
@@ -1103,12 +1172,19 @@ function buildEntryPlan(decision, state) {
     metadata: {
       strategy_family: STRATEGY_FAMILY,
       market_snapshot: market,
-      candidate_metrics: metadata.metrics || null,
-      candidate_score_components: metadata.score_components || null,
+      candidate_metrics: candidateMetrics || null,
+      candidate_score_components: laneMeta.score_components || null,
       execution_estimates: executionEstimates,
+      multi_gate: {
+        eligibility_score: eligibilityScore,
+        setup_quality_score: setupQualityScore,
+        execution_quality_score: executionQualityScore,
+        expected_edge_after_costs_pct: expectedEdgeAfterCostsPct,
+        score_gap_vs_no_trade: scoreGapVsNoTrade,
+      },
       invalidation: {
         price: invalidationPrice,
-        kind: 'hard_price_stop_for_short',
+        kind: isLong ? 'hard_price_stop_for_long' : 'hard_price_stop_for_short',
         derived_from_reference_level: referenceLevel,
         buffer_pct: INVALIDATION_BUFFER_PCT,
       },
@@ -1126,6 +1202,10 @@ function buildEntryPlan(decision, state) {
       composite_score: compositeScore,
       no_trade_score: noTradeScore,
       market_age_minutes: marketState.age_minutes,
+      regime_family: laneMeta.regime_family || decision.regime_tag || null,
+      setup_family: laneMeta.setup_family || null,
+      time_bucket: laneMeta.time_bucket || candidateMetrics.timeBucket || null,
+      side,
     },
   };
 }
@@ -1228,6 +1308,20 @@ function pnlForShort(entryPrice, currentPrice, notionalUsd) {
 
 function updatePaperPositionMark(position, currentPrice, unrealizedPnlUsd, exitState = null) {
   const raw = { ...(position.raw || {}) };
+  const notionalUsd = safeNumber(position.notional_usd, safeNumber(position.size_usd, 0)) || 0;
+  const mfeUsd = Math.max(safeNumber(raw.max_favorable_excursion_usd, unrealizedPnlUsd) || unrealizedPnlUsd, unrealizedPnlUsd);
+  const maeUsd = Math.min(safeNumber(raw.max_adverse_excursion_usd, unrealizedPnlUsd) || unrealizedPnlUsd, unrealizedPnlUsd);
+  raw.max_favorable_excursion_usd = Number(mfeUsd.toFixed(6));
+  raw.max_adverse_excursion_usd = Number(maeUsd.toFixed(6));
+  raw.execution_telemetry = {
+    ...(raw.execution_telemetry || {}),
+    last_mark_price: currentPrice,
+    last_unrealized_pnl_usd: unrealizedPnlUsd,
+    last_update_ts: new Date().toISOString(),
+    mark_to_entry_move_pct: position.entry_price_usd ? Number((((currentPrice - position.entry_price_usd) / position.entry_price_usd) * 100).toFixed(6)) : null,
+    last_mark_to_entry_drift_bps: quoteDriftBps(position.entry_price_usd, currentPrice),
+    open_notional_usd: notionalUsd,
+  };
   if (exitState) raw.exit = exitState;
   runDbCliWrite('record-perp-position', {
     position_key: position.position_key,
@@ -1448,8 +1542,15 @@ function openPaperShort(plan, state, journal) {
     };
   }
 
-  const fillFraction = clamp(SIMULATED_PARTIAL_FILL_PCT / 100, 0.01, 1);
-  const responseDriftMultiplier = 1 + (SIMULATED_RESPONSE_DRIFT_BPS / 10000);
+  const estSpreadBps = safeNumber(plan.metadata?.execution_estimates?.spread_bps, 8) || 8;
+  const estSlippageBps = safeNumber(plan.metadata?.execution_estimates?.slippage_bps, 12) || 12;
+  const realizedVolPct = safeNumber(plan.metadata?.candidate_metrics?.realizedVolPct, 0) || 0;
+  const volume24h = safeNumber(plan.metadata?.candidate_metrics?.volume24h, 0) || 0;
+  const liquidityPenalty = volume24h >= 100000000 ? 0.8 : volume24h >= 50000000 ? 1 : volume24h >= 20000000 ? 1.3 : 1.8;
+  const modeledDriftBps = (estSpreadBps * 0.35) + (estSlippageBps * 0.65) + (realizedVolPct * 6 * liquidityPenalty) + SIMULATED_RESPONSE_DRIFT_BPS;
+  const signedDriftBps = plan.side === 'sell' ? Math.abs(modeledDriftBps) : -Math.abs(modeledDriftBps);
+  const fillFraction = clamp((SIMULATED_PARTIAL_FILL_PCT / 100) - clamp(realizedVolPct * 0.04, 0, 0.35) - (volume24h < 25000000 ? 0.15 : 0), 0.15, 1);
+  const responseDriftMultiplier = 1 + (signedDriftBps / 10000);
   const actualFillPrice = plan.entryPrice * responseDriftMultiplier;
   const driftBps = quoteDriftBps(plan.entryPrice, actualFillPrice);
   const positionKey = `paper-perp:${plan.decisionId}`;
@@ -1584,6 +1685,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
   const ts = new Date().toISOString();
   const raw = position.raw || {};
   const reductionFraction = clamp(safeNumber(options.reduction_fraction, 1) || 1, 0.05, 1);
+  const metadataPatch = options.metadataPatch && typeof options.metadataPatch === 'object' ? options.metadataPatch : {};
   const quantity = safeNumber(raw.quantity, safeNumber(position.notional_usd) / Math.max(safeNumber(position.entry_price_usd, 1), 1e-9)) || 0;
   const closingQuantity = quantity * reductionFraction;
   const exitNotional = closingQuantity * currentPrice;
@@ -1615,7 +1717,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
     decision_id: position.decision_id,
     reason: `Paper short ${closeKind}: ${exitReason}`,
     signature: orderKey,
-    raw: { strategy_family: STRATEGY_FAMILY, exit_reason: exitReason, reduction_fraction: reductionFraction },
+    raw: { strategy_family: STRATEGY_FAMILY, exit_reason: exitReason, reduction_fraction: reductionFraction, ...metadataPatch },
   });
 
   runDbCliWrite('record-perp-fill', {
@@ -1652,7 +1754,7 @@ function closePaperShort(position, currentPrice, exitReason, options = {}) {
       reduction_fraction: reductionFraction,
     });
   } else {
-    const nextRaw = { ...(position.raw || {}) };
+    const nextRaw = { ...(position.raw || {}), ...metadataPatch };
     nextRaw.quantity = nextQuantity;
     nextRaw.last_reduce = { ts, exit_reason: exitReason, reduction_fraction: reductionFraction, realized_pnl_usd: realizedPnlUsd };
     runDbCliWrite('record-perp-position', {
@@ -1760,12 +1862,7 @@ function evaluateOpenPositions(state) {
         symbol: position.asset,
         reason: currentPriceState.reason,
       });
-      results.push({
-        action: 'stale_market',
-        symbol: position.asset,
-        position_key: position.position_key,
-        reason: currentPriceState.reason,
-      });
+      results.push({ action: 'stale_market', symbol: position.asset, position_key: position.position_key, reason: currentPriceState.reason });
       continue;
     }
 
@@ -1779,6 +1876,11 @@ function evaluateOpenPositions(state) {
     const stopPrice = safeNumber(position.stop_loss_price, Infinity);
     const targetPrice = safeNumber(position.take_profit_price, -Infinity);
     const invalidationPrice = safeNumber(position.raw?.risk?.invalidation?.price, stopPrice);
+    const riskPerTradeUsd = Math.max(0.0001, Math.abs((safeNumber(position.stop_loss_price, entryPrice) - entryPrice) / Math.max(entryPrice, 1e-9)) * Math.max(notionalUsd, 0));
+    const rMultiple = unrealizedPnlUsd / riskPerTradeUsd;
+    const executionTelemetry = position.raw?.execution_telemetry || {};
+    const lastDriftBps = Math.abs(safeNumber(executionTelemetry.last_mark_to_entry_drift_bps, 0) || 0);
+    const partialTaken = Boolean(position.raw?.partial_take_profit_done);
 
     if (currentPrice >= stopPrice || currentPrice >= invalidationPrice) {
       const realized = closePaperShort(position, currentPrice, 'stop_or_invalidation_hit');
@@ -1786,10 +1888,27 @@ function evaluateOpenPositions(state) {
       results.push({ action: 'closed', symbol: position.asset, reason: 'stop_or_invalidation_hit', realized_pnl_usd: realized });
       continue;
     }
+    if (!partialTaken && rMultiple >= PARTIAL_TAKE_PROFIT_R) {
+      const realized = closePaperShort(position, currentPrice, 'partial_take_profit', { reduction_fraction: 0.5, metadataPatch: { partial_take_profit_done: true } });
+      results.push({ action: 'reduced', symbol: position.asset, reason: 'partial_take_profit', realized_pnl_usd: realized, r_multiple: rMultiple });
+      continue;
+    }
     if (currentPrice <= targetPrice) {
       const realized = closePaperShort(position, currentPrice, 'take_profit_hit');
       closedCount += 1;
       results.push({ action: 'closed', symbol: position.asset, reason: 'take_profit_hit', realized_pnl_usd: realized });
+      continue;
+    }
+    if (partialTaken && rMultiple < TRAILING_STOP_R) {
+      const realized = closePaperShort(position, currentPrice, 'trailing_stop_after_partial');
+      closedCount += 1;
+      results.push({ action: 'closed', symbol: position.asset, reason: 'trailing_stop_after_partial', realized_pnl_usd: realized, r_multiple: rMultiple });
+      continue;
+    }
+    if (lastDriftBps > EXECUTION_DEGRADATION_EXIT_BPS) {
+      const realized = closePaperShort(position, currentPrice, 'execution_degradation_exit');
+      closedCount += 1;
+      results.push({ action: 'closed', symbol: position.asset, reason: 'execution_degradation_exit', realized_pnl_usd: realized, last_drift_bps: lastDriftBps });
       continue;
     }
     if (heldMinutes >= MAX_HOLD_MINUTES) {
@@ -1805,6 +1924,7 @@ function evaluateOpenPositions(state) {
       current_price: currentPrice,
       unrealized_pnl_usd: unrealizedPnlUsd,
       held_minutes: heldMinutes,
+      r_multiple: Number(rMultiple.toFixed(4)),
     });
   }
 
@@ -1951,7 +2071,6 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
     });
     return { action: 'skip', reason: 'daily_loss_cap', realizedPnlUsd };
   }
-
   if ((tradedNotionalUsd + PAPER_NOTIONAL_USD) > MAX_DAILY_NOTIONAL_USD) {
     recordRiskEvent('perp_daily_notional_cap_hit', 'info', 'Daily paper perp notional cap reached; blocking new entries', {
       strategy_family: STRATEGY_FAMILY,
@@ -1989,6 +2108,20 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
   }
 
   const plan = choice.plan;
+  if (plan.side !== 'sell') {
+    recordExecutorDecision(choice.decision, choice.lane, 'skipped', 'long_shadow_book_only', {
+      decision_summary: 'shadow_only_long_candidate',
+      side: plan.side,
+    });
+    return {
+      action: 'skip',
+      reason: 'long_shadow_book_only',
+      symbol: plan.symbol,
+      signal_type: plan.signalType,
+      decision_id: plan.decisionId,
+    };
+  }
+
   const entryRisk = evaluateEntryRiskGuards(state, journal, plan);
   if (entryRisk.blocked) {
     recordRiskEvent('perp_entry_risk_guard_block', 'warning', `Risk guard blocked paper perp entry for ${plan.symbol}`, {
@@ -2011,6 +2144,7 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
       risk_guard: entryRisk.guardContext,
     };
   }
+
   const cooldown = inCooldown(state, plan.symbol);
   if (cooldown.blocked) {
     recordRiskEvent('perp_entry_cooldown_block', 'info', `Cooldown blocked paper perp entry for ${plan.symbol}`, {
@@ -2059,157 +2193,84 @@ function maybeEnterNewPosition(state, journal, precomputedChoice = null, policyC
       };
     }
 
-    const liveSubmitAttempt = submitPerpLiveOrder(liveAdapterRequest);
     const livePlan = buildLiveStubPlan(plan, approvedIntent);
+    const liveAdapterResponse = submitPerpLiveOrder(liveAdapterRequest);
     const entryExecution = openPaperShort(livePlan, state, journal);
     markApprovalIntentTerminal(approvedIntent, 'executed', {
-      execution_result: {
-        action: entryExecution.action,
-        reason: entryExecution.reason,
-        entry_price: entryExecution.entry_price,
-        size_usd: entryExecution.size_usd,
-        live_adapter_request: liveAdapterRequest,
-        live_submit_attempt: liveSubmitAttempt,
-      },
+      live_adapter_request: liveAdapterRequest,
+      live_adapter_response: liveAdapterResponse,
+      entry_execution: entryExecution,
     });
-    const actionKey = `open:${livePlan.decisionId}`;
-    upsertJournalAction(journal, actionKey, {
-      approval_id: approvedIntent.approval_id,
-      approval_status: 'telegram_approved',
-      live_stub: true,
-      last_risk_decision: entryExecution.reason || 'live_stub_opened',
-    });
-    recordSystemEvent('perp_live_stub_entry_submitted', 'warning', `Tiny live stub entry approved for ${livePlan.symbol}`, {
+    recordSystemEvent('perp_live_stub_entry_submitted', 'warning', `Executed live-stub paper entry on ${plan.symbol}`, {
       strategy_family: STRATEGY_FAMILY,
       product_type: 'perps',
-      approval_id: approvedIntent.approval_id,
-      decision_id: livePlan.decisionId,
-      symbol: livePlan.symbol,
-      signal_type: livePlan.signalType,
-      size_usd: livePlan.paperNotional,
-      stop_loss_price: livePlan.stopLossPrice,
-      take_profit_price: livePlan.takeProfitPrice,
-      execution_result: entryExecution,
+      decision_id: plan.decisionId,
+      symbol: plan.symbol,
+      signal_type: plan.signalType,
       live_adapter_request: liveAdapterRequest,
-      live_submit_attempt: liveSubmitAttempt,
-      live_adapter_capabilities: adapterCapabilities(),
+      live_adapter_response: liveAdapterResponse,
+      live_stub: true,
     });
-    recordExecutorDecision(choice.decision, choice.lane, 'executed', 'live_stub_opened_after_telegram_approval', {
-      decision_summary: entryExecution.action === 'partial_fill' ? 'live_stub_partial_fill' : 'live_stub_opened',
-      entry_price: entryExecution.entry_price,
-      size_usd: entryExecution.size_usd,
-      stop_loss_price: livePlan.stopLossPrice,
-      take_profit_price: livePlan.takeProfitPrice,
-      approval_id: approvedIntent.approval_id,
-      action_state: entryExecution.action_state,
-      live_adapter_request: liveAdapterRequest,
-      live_submit_attempt: liveSubmitAttempt,
-      live_adapter_capabilities: adapterCapabilities(),
+    recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_short_opened', {
+      decision_summary: entryExecution.action === 'partial_fill' ? 'trade_partial_fill' : 'trade_opened',
+      live_stub: true,
+      live_adapter_response: liveAdapterResponse,
     });
-    return {
-      ...entryExecution,
-      action: entryExecution.action,
-      execution_mode: 'live_stub',
-      approval_id: approvedIntent.approval_id,
-      approval_status: 'telegram_approved',
-      live_adapter_request: liveAdapterRequest,
-      live_submit_attempt: liveSubmitAttempt,
-      live_adapter_capabilities: adapterCapabilities(),
-    };
+    return { ...entryExecution, live_stub: true, live_adapter_request: liveAdapterRequest, live_adapter_response: liveAdapterResponse };
   }
 
   const entryExecution = openPaperShort(plan, state, journal);
   recordExecutorDecision(choice.decision, choice.lane, 'executed', entryExecution.reason || 'paper_short_opened', {
     decision_summary: entryExecution.action === 'partial_fill' ? 'trade_partial_fill' : 'trade_opened',
-    entry_price: entryExecution.entry_price,
-    size_usd: entryExecution.size_usd,
-    stop_loss_price: plan.stopLossPrice,
-    take_profit_price: plan.takeProfitPrice,
-    action_state: entryExecution.action_state,
+    live_stub: false,
   });
   return entryExecution;
+}
+
+function summarizeCycle(state, positionResult, commandResult, entryResult, candidateChoiceSummary, policyContext) {
+  return {
+    requested_mode: LIVE_REQUESTED ? 'live' : 'paper',
+    active_mode: MODE,
+    open_positions_before: safeNumber(state.open_positions?.length, 0),
+    daily_realized_pnl_usd: safeNumber(state.daily_paper_metrics?.realized_pnl_usd, 0),
+    daily_trade_notional_usd: safeNumber(state.daily_paper_metrics?.trade_notional_usd, 0),
+    candidate_choice: candidateChoiceSummary,
+    pilot_policy: policyContext || null,
+    position_management: positionResult || null,
+    command_result: commandResult || null,
+    entry_result: entryResult || null,
+  };
 }
 
 function main() {
   ensureDataDir();
   if (!acquireLock()) return;
-
   try {
     if (fs.existsSync(KILL_SWITCH_FILE)) {
-      recordRiskEvent('perp_executor_disabled', 'warning', 'Perp paper executor disabled via kill switch', {
-        kill_switch_file: KILL_SWITCH_FILE,
-      });
+      recordRiskEvent('perp_executor_disabled', 'warning', 'Perp executor disabled by kill switch file', { kill_switch_file: KILL_SWITCH_FILE });
+      log('kill switch present; exiting');
       return;
     }
 
-    const strategyControls = readStrategyControls();
     const journal = loadJournal();
     const state = readExecutorState();
-    if ((state.open_positions || []).length > MAX_ONE_POSITION) {
-      log('multiple open positions detected; executor will manage all current exposure and refuse new entries');
-    }
-
-    const recoverySummary = reconcileJournalWithState(state, journal);
-    const reconciledState = recoverySummary.recovered_orphan_positions > 0 || recoverySummary.recovered_timeout_actions > 0
-      ? readExecutorState()
-      : state;
-    const positionResult = evaluateOpenPositions(reconciledState);
-    const postPositionState = positionResult.closed_count > 0 ? readExecutorState() : reconciledState;
+    const strategyControls = readStrategyControls();
+    const positionResult = evaluateOpenPositions(state);
+    const postPositionState = readExecutorState();
     const commandResult = processLiveCommand(postPositionState);
     const refreshedState = commandResult ? readExecutorState() : postPositionState;
-    const remainingOpenPositions = refreshedState.open_positions || [];
     const candidateChoice = pickEntryDecision(refreshedState);
     const candidateChoiceSummary = summarizeCandidateChoice(candidateChoice);
-    const pilotPolicy = resolvePilotPolicyContext(
-      strategyControls,
-      strategyFromChoice(candidateChoice),
-      symbolFromChoice(candidateChoice),
-    );
-    recordPilotPolicyOutcome(pilotPolicy);
-    const entryResult = remainingOpenPositions.length === 0
-      ? maybeEnterNewPosition(refreshedState, journal, candidateChoice, pilotPolicy)
-      : { action: 'skip', reason: 'active_position_exists', open_position_count: remainingOpenPositions.length };
-    const finalState = ['opened', 'partial_fill'].includes(entryResult.action) ? readExecutorState() : refreshedState;
-    const postActionRecoverySummary = reconcileJournalWithState(finalState, journal);
+    const policyContext = resolvePilotPolicyContext(strategyControls, strategyFromChoice(candidateChoice), symbolFromChoice(candidateChoice));
+    if (LIVE_REQUESTED) recordPilotPolicyOutcome(policyContext);
+    const entryResult = maybeEnterNewPosition(refreshedState, journal, candidateChoice, policyContext);
 
-    const summary = {
-      ts: new Date().toISOString(),
-      requested_mode: LIVE_REQUESTED ? 'live' : 'paper',
-      active_mode: MODE,
-      open_positions_before: (state.open_positions || []).length,
-      daily_realized_pnl_usd: safeNumber(refreshedState.daily_paper_metrics?.realized_pnl_usd, 0),
-      daily_trade_notional_usd: safeNumber(refreshedState.daily_paper_metrics?.trade_notional_usd, 0),
-      candidate_choice: candidateChoiceSummary,
-      pilot_policy: pilotPolicy,
-      recovery: {
-        initial: recoverySummary,
-        final: postActionRecoverySummary,
-        journal_file: JOURNAL_FILE,
-      },
-      active_actions: postActionRecoverySummary.active_actions,
-      latest_action: entryResult.action_state || null,
-      position_result: positionResult,
-      command_result: commandResult,
-      live_approval_intent: loadLiveApprovalIntent(),
-      live_command_state: loadLiveCommandState(),
-      entry_result: entryResult,
-    };
-    recordSystemEvent('perp_executor_cycle', 'info', 'Perp paper executor cycle completed', {
-      strategy_family: STRATEGY_FAMILY,
-      product_type: 'perps',
-      summary,
-    });
-    log('perps-auto-trade completed', summary);
-    console.log(JSON.stringify(summary));
+    recordSystemEvent('perp_executor_cycle', 'info', 'Perp executor completed cycle', summarizeCycle(state, positionResult, commandResult, entryResult, candidateChoiceSummary, policyContext));
+    log('perps executor cycle complete', { positionResult, commandResult, entryResult, candidateChoice: candidateChoiceSummary });
   } catch (err) {
-    try {
-      recordRiskEvent('perp_executor_error', 'warning', err.message, {
-        strategy_family: STRATEGY_FAMILY,
-        mode: MODE,
-      });
-    } catch {}
-    console.error(`perps-auto-trade failed: ${err.message}`);
-    process.exitCode = 1;
+    recordRiskEvent('perp_executor_error', 'error', err.message, { strategy_family: STRATEGY_FAMILY });
+    log(`perps executor failed: ${err.message}`);
+    throw err;
   } finally {
     releaseLock();
   }
