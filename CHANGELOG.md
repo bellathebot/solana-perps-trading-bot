@@ -22,3 +22,7 @@ Highlights:
 - pointed runtime/config examples at the perps-only CLI path
 - added GitHub Actions validation workflow
 - expanded README with stability guidance and OSS roadmap
+
+- added `trading_system/perps_core.py` as a smaller public module surface
+- added `docs/reference/perps-schema.md`
+- added GitHub Actions badge to README
