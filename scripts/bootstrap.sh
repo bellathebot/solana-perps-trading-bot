@@ -11,4 +11,4 @@ npm install
 echo "Repo root: $ROOT"
 echo "Data dir:   $DATA_DIR"
 echo "DB path:    $DB_PATH"
-echo "Next: PYTHONPATH="$ROOT" python "$ROOT/trading_system/sync_trading_db.py" --db "$DB_PATH" --data-dir "$DATA_DIR""
+echo "Next: PYTHONPATH="$ROOT" python "$ROOT/trading_system/perps_sync_db.py" --db "$DB_PATH" --data-dir "$DATA_DIR""
