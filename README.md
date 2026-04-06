@@ -72,7 +72,8 @@ Later:
 
 - `perps-monitor.mjs` — polls Jupiter perps markets, positions, and history, then records market/account state and perps candidate rows
 - `perps-auto-trade.mjs` — paper-first perps executor with explicit live gating and recovery journaling
-- `trading_system/perps_core.py` — smaller public perps-facing Python module surface over the broader shared SQLite layer
+- `trading_system/perps_db_impl.py` — public OSS-facing implementation shim over the broader shared SQLite layer
+- `trading_system/perps_core.py` — smaller public perps-facing Python module surface over `perps_db_impl.py`
 - `trading_system/perps_db_cli.py` — perps-only public CLI surface for SQLite reads/writes used by the perps stack
 - `trading_system/perps_sync_db.py` — perps-facing sync wrapper for file/log ingestion into SQLite
 - `trading_system/perps_telegram_notifier.py` — outbound Telegram notifications for executor and risk events
@@ -87,6 +88,7 @@ Later:
 - `docs/plans/2026-03-23-intraday-strategy-redesign.md`
 - `docs/research/playbook-snapshot.md`
 - `docs/reference/perps-schema.md`
+- `examples/commands.md`
 - `trading_system/perps_live_execution_adapter_contract.md`
 - `trading_system/perps_jupiter_live_handoff_checklist.md`
 - `CHANGELOG.md`
@@ -106,7 +108,7 @@ node perps-auto-trade.mjs
 ## Validation
 
 ```bash
-python -m py_compile trading_system/perps_core.py trading_system/perps_db_cli.py trading_system/perps_sync_db.py trading_system/perps_telegram_notifier.py trading_system/perps_live_approval_bridge.py trading_system/daily_analytics_report.py
+python -m py_compile trading_system/perps_db_impl.py trading_system/perps_core.py trading_system/perps_db_cli.py trading_system/perps_sync_db.py trading_system/perps_telegram_notifier.py trading_system/perps_live_approval_bridge.py trading_system/daily_analytics_report.py
 node --check perps-monitor.mjs
 node --check perps-auto-trade.mjs
 node trading_system/perps_live_execution_adapter_harness.mjs
