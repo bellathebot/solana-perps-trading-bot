@@ -107,8 +107,14 @@ node perps-auto-trade.mjs
 ## Validation
 
 ```bash
-python -m py_compile trading_system/perps_db_impl.py trading_system/perps_core.py trading_system/perps_db_cli.py trading_system/perps_sync_db.py trading_system/perps_telegram_notifier.py trading_system/perps_live_approval_bridge.py trading_system/daily_analytics_report.py
-node --check perps-monitor.mjs
-node --check perps-auto-trade.mjs
-node trading_system/perps_live_execution_adapter_harness.mjs
+npm run validate
+```
+
+Individual commands:
+
+```bash
+npm run check:python
+npm run check:node
+npm run check:harness
+npm run test:public
 ```
