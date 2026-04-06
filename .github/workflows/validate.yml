@@ -1,0 +1,39 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Python compile checks
+        run: |
+          python -m py_compile             trading_system/perps_db_cli.py             trading_system/perps_sync_db.py             trading_system/runtime_config.py             trading_system/perps_telegram_notifier.py             trading_system/perps_live_approval_bridge.py             trading_system/trading_db_cli.py             trading_system/sync_trading_db.py             trading_system/daily_analytics_report.py             trading_system/perps_live_adapter_dry_run_preflight.py             trading_system/perps_readiness_preflight.py             trading_system/perps_readiness_adapter_summary.py
+
+      - name: Node syntax checks
+        run: |
+          node --check perps-monitor.mjs
+          node --check perps-auto-trade.mjs
+          node --check trading_system/perps_live_execution_adapter.mjs
+          node --check trading_system/perps_live_execution_adapter_harness.mjs
+
+      - name: Adapter harness
+        run: node trading_system/perps_live_execution_adapter_harness.mjs
