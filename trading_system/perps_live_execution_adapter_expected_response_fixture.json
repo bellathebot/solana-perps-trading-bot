@@ -1,0 +1,6 @@
+{
+  "implemented": false,
+  "action": "not_implemented",
+  "reason": "real_perps_live_execution_not_available_in_scaffold",
+  "adapter_name": "jupiter-perps-live-execution-adapter-scaffold"
+}
