@@ -13,3 +13,8 @@ Changes:
 
 Still intentionally not implemented:
 - true live perps order placement
+
+Additional hardening:
+- added `perps_db_impl.py` public shim
+- added perps-only public tests
+- added examples folder with sample payloads and commands
