@@ -2,7 +2,7 @@
 
 A paper-first, supervised-live Solana perpetuals trading stack built around Jupiter perps monitoring, SQLite-backed analytics, and Telegram approval workflows.
 
-This repository packages the current perps-trading work into a standalone project without local runtime secrets, wallet keys, Telegram tokens, SQLite contents, or machine-specific service state.
+This repository packages the current perps-trading work into a standalone project without local runtime secrets, wallet keys, Telegram tokens, SQLite contents, or machine-specific service state. The public export intentionally excludes spot-only operator tooling that is not required for the perps workflow.
 
 ## What it does
 
@@ -23,6 +23,7 @@ This repository packages the current perps-trading work into a standalone projec
 - `trading_system/perps_live_approval_bridge.py` — reads Telegram replies and updates perps approval/command bridge files
 - `trading_system/perps_live_execution_adapter.mjs` — non-executing scaffold for future real Jupiter perps order wiring
 - `trading_system/run_perps_cycle.sh` — repo-local orchestration script for the monitor/executor/notifier cycle
+- `trading_system/daily_analytics_report.py` — perps-focused SQLite reporting summary
 
 ## Research and design docs included
 
