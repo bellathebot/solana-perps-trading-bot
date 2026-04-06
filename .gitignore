@@ -1,0 +1,17 @@
+.trading-data/
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+node_modules/
+.env
+.env.*
+telegram.txt
+*.key
+*.pem
+.DS_Store
+.vscode/
+.idea/
