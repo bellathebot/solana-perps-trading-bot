@@ -26,3 +26,6 @@ Highlights:
 - added `trading_system/perps_core.py` as a smaller public module surface
 - added `docs/reference/perps-schema.md`
 - added GitHub Actions badge to README
+- added `trading_system/perps_db_impl.py` as a public implementation shim
+- added `tests/test_public_perps_surface.py` and wired it into CI
+- added `examples/` with public CLI commands and sample payloads
