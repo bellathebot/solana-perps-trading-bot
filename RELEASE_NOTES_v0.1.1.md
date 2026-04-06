@@ -18,3 +18,7 @@ Additional hardening:
 - added `perps_db_impl.py` public shim
 - added perps-only public tests
 - added examples folder with sample payloads and commands
+
+Final public cleanup:
+- removed legacy mixed DB/CLI/sync files from the public repo
+- bootstrap/CI/docs now point only at the perps-native public path
